@@ -1,28 +1,14 @@
-Meta::Plugin@ pluginMeta = Meta::ExecutingPlugin();
-const string  pluginNameHash = Crypto::MD5(pluginMeta.Name);
-const string  menuIconColor = "\\$" + pluginNameHash.SubStr(0, 3);
-const string  pluginIcon = GetRandomIcon(pluginNameHash); // Replace with an apropriate specific icon
-const string  menuTitle = menuIconColor + pluginIcon + "\\$z " + pluginMeta.Name;
+class UiNav_UnloadCleanup {
+    ~UiNav_UnloadCleanup() {
+        UiNav::Layers::DestroyAllOwned();
+    }
+}
+UiNav_UnloadCleanup g_UiNav_UnloadCleanup;
 
 void Main() {
-    
-}
-
-void RenderInterface() {
-    if (!S_Enabled || (S_HideWithGame && !UI::IsGameUIVisible()) || (S_HideWithOP && !UI::IsOverlayShown())) { return; }
-
-    if (UI::Begin(menuTitle + "###main-" + pluginMeta.ID, S_Enabled, UI::WindowFlags::None)) {
-        RenderWindow();
+    while (true) {
+        // Service UiNav dump requests from OpDevCompanion while UiNav is active.
+        UiNav::Dump::TickRequestPump();
+        yield();
     }
-    UI::End();
-}
-
-void RenderMenu() {
-    if (UI::MenuItem(menuTitle, "", S_Enabled)) {
-        S_Enabled = !S_Enabled;
-    }
-}
-
-void RenderWindow() {
-    
 }

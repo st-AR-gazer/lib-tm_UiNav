@@ -97,7 +97,7 @@ namespace logging {
 
     void RotateOldLogFiles() {
         string absFolder = IO::FromStorageFolder(kLogsFolder);
-        array<string>@ files = IO::IndexFolder(absFolder, /*recursive=*/false);
+        array<string>@ files = IO::IndexFolder(absFolder, false);
 
         int64 earliestMs = Time::Now - int64(kRetentionDays - 1) * kOneDayMs;
         if (earliestMs < 0) earliestMs = 0;

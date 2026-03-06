@@ -16,12 +16,24 @@ namespace _Text {
     }
 
     int NthIndexOf(const string &in str, const string &in value, int n) {
-        int index = -1;
-        for (int i = 0; i < n; ++i) {
-            index = str.IndexOf(value, index + 1);
-            if (index == -1) break;
+        if (n <= 0 || value.Length == 0) return -1;
+
+        int searchFrom = 0;
+        int lastFound = -1;
+
+        for (int occ = 0; occ < n; ++occ) {
+            int found = -1;
+            for (int i = searchFrom; i <= str.Length - value.Length; ++i) {
+                if (str.SubStr(i, value.Length) == value) {
+                    found = i;
+                    break;
+                }
+            }
+            if (found == -1) return -1;
+            lastFound = found;
+            searchFrom = found + value.Length;
         }
-        return index;
+        return lastFound;
     }
 
     // ty XertroV
@@ -71,11 +83,49 @@ namespace _IO {
             return false;
         }
 
+        string _NormalizePathForCompare(const string &in rawPath) {
+            string p = rawPath.Trim();
+            p = p.Replace("\\", "/");
+            while (p.IndexOf("//") >= 0) p = p.Replace("//", "/");
+            return p.ToLower();
+        }
+
+        bool _IsUiNavLogsPath(const string &in rawPath) {
+            string p = _NormalizePathForCompare(rawPath);
+            if (p.Length == 0) return false;
+            if (p == "logs" || p.StartsWith("logs/")) return true;
+
+            string logsRoot = _NormalizePathForCompare(IO::FromStorageFolder("Logs"));
+            if (!logsRoot.EndsWith("/")) logsRoot += "/";
+            if (p == logsRoot.SubStr(0, logsRoot.Length - 1)) return true;
+            return p.StartsWith(logsRoot);
+        }
+
+        string _FileNameFromPath(const string &in rawPath) {
+            string p = rawPath.Replace("\\", "/");
+            int ix = p.LastIndexOf("/");
+            if (ix < 0) return p;
+            if (ix >= int(p.Length) - 1) return "";
+            return p.SubStr(ix + 1);
+        }
+
+        string _RedirectPathOutOfLogs(const string &in rawPath) {
+            string fileName = Path::SanitizeFileName(_FileNameFromPath(rawPath));
+            if (fileName.Length == 0) fileName = "uinav_redirected_write.txt";
+            return IO::FromStorageFolder("Exports/RedirectedWrites/" + fileName);
+        }
+
         void WriteFile(string _path, const string &in content, bool verbose = false) {
             string path = _path;
             if (verbose) log("Writing to file: " + path, LogLevel::Info, 84, "WriteFile");
 
             if (path.EndsWith("/") || path.EndsWith("\\")) { log("Invalid file path: " + path, LogLevel::Error, 86, "WriteFile"); return; }
+
+            if (_IsUiNavLogsPath(path)) {
+                string redirected = _RedirectPathOutOfLogs(path);
+                log("Blocked non-logging write to UiNav/Logs; redirected to: " + redirected, LogLevel::Warning, 89, "WriteFile");
+                path = redirected;
+            }
 
             if (!IO::FolderExists(Path::GetDirectoryName(path))) { IO::CreateFolder(Path::GetDirectoryName(path), true); }
 

@@ -1,8 +1,15 @@
 [meta]
-name = ""
+name = "UiNav"
 author = "ar....."
 version = "0.1.0"
-category = "!"
+category = "Libraries"
 
 [script]
-optional_dependencies = [ "" ]
+module = "UiNav"
+exports = [
+  "src/Exports/api.as"
+]
+shared_exports = [
+  "src/core/types.as"
+]
+optional_dependencies = []
