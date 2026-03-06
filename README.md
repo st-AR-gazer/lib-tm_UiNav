@@ -5,13 +5,17 @@ It supports:
 - **ManiaLink UI (ML / UILayers)** for layer/page-based UI work.
 - **ControlTree UI (control-tree overlays)** for overlay tree/path-based UI work.
 
+The canonical public targeting pattern is `req + selector` for both backends.
+
 ## Public API
 
 Dependent plugins should only rely on:
 - `src/Exports/api.as` (public function imports)
-- `src/core/types.as` (shared types like `Target`, `ManiaLinkReq`, `ManiaLinkSpec`, `ControlTreeReq`, `ControlTreeSpec`, `NodeRef`)
+- `src/core/types.as` and `src/core/builder_types.as` (shared types like `Target`, `ManiaLinkReq`, `ManiaLinkSpec`, `ControlTreeReq`, `ControlTreeSpec`, `NodeRef`, `UiNav::Builder::*`)
 
 Everything else in `src/` is considered internal implementation detail.
+
+Public authoring support is available through `UiNav::Builder` plus owned-layer lifecycle helpers in `UiNav::Layers` (`EnsureOwned`, `GetOwned`, `DestroyOwned`, `DestroyAllOwned`).
 
 `UiNav::ML` exports include both single-node snapshot helpers and multi-element **style pack** helpers
 for capturing/reusing styling across menus/layers (`NewStylePack`, `StylePackAddEntry*`, `StylePackApply`, save/load JSON).

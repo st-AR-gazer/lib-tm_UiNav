@@ -7,9 +7,22 @@ namespace UiNav {
     }
 
     shared enum BackendPref {
-        Auto = 0,
+        Unspecified = 0,
         PreferControlTree = 1,
         PreferML = 2
+    }
+
+    shared enum ManiaLinkSource {
+        CurrentApp = 0,
+        Playground = 1,
+        Menu = 2,
+        Editor = 3
+    }
+
+    shared enum ControlTreeSearchMode {
+        Exact = 0,
+        Smart = 1,
+        HintsOnly = 2
     }
 
     shared enum OpStatus {
@@ -24,7 +37,7 @@ namespace UiNav {
     }
 
     shared class ManiaLinkReq {
-        string name;
+        ManiaLinkSource source = ManiaLinkSource::CurrentApp;
         string pageNeedle;
         string rootControlId;
 
@@ -32,17 +45,6 @@ namespace UiNav {
         bool mustHaveLocalPage = true;
 
         int layerIxHint = -1;
-
-        ManiaLinkReq() {}
-        ManiaLinkReq(const string &in name_, const string &in needle_="") {
-            name = name_;
-            pageNeedle = needle_;
-        }
-    }
-
-    shared class LayerReq : ManiaLinkReq {
-        LayerReq() { super(); }
-        LayerReq(const string &in name_, const string &in needle_="") { super(name_, needle_); }
     }
 
     shared class Requires {
@@ -58,32 +60,19 @@ namespace UiNav {
     }
 
     shared class ControlTreeReq {
-        uint overlay   = 0;
+        uint overlay   = 16;
+        uint rootIx    = 0;
 
         bool anyRoot   = false;
         uint maxRoots  = 24;
 
-        bool smart     = false;
-        bool hintsOnly = false;
+        ControlTreeSearchMode searchMode = ControlTreeSearchMode::Exact;
         string guardStartsWith;
     }
 
-    shared class CtlReq : ControlTreeReq {}
-
     shared class ControlTreeSpec {
         ControlTreeReq@ req = null;
-
-        uint overlay = 16;
-        string path;
         string selector;
-        string idName;
-
-        bool anyRoot   = false;
-        uint maxRoots  = 24;
-
-        bool smart     = false;
-        bool hintsOnly = false;
-        string guardStartsWith;
 
         bool clickChildFallback = true;
 
@@ -97,10 +86,7 @@ namespace UiNav {
         }
     }
 
-    shared class CtlSpec : ControlTreeSpec {}
-
     shared class ManiaLinkSpec {
-        ManiaLinkReq@ layer;
         ManiaLinkReq@ req = null;
         string selector;
 
@@ -115,48 +101,19 @@ namespace UiNav {
         }
     }
 
-    shared class MlSpec : ManiaLinkSpec {}
-
     shared class Target {
         string name;
-        BackendPref pref = BackendPref::Auto;
+        BackendPref pref = BackendPref::Unspecified;
 
         ControlTreeSpec@ controlTree;
         ManiaLinkSpec@  ml;
         Requires@ req;
 
-        bool cacheNativePointers = true;
-
-        uint cacheTtlMs = 200;
-        uint lastResolveMs = 0;
-        uint cacheEpoch = 0;
-
-        uint planUid = 0;
-
-        BackendKind lastKind = BackendKind::None;
-        string lastDebug = "";
-
-        CControlBase@ cachedControlTree = null;
-        CGameManialinkControl@ cachedMl = null;
-        CGameUILayer@ cachedLayer = null;
-        int cachedLayerIx = -1;
-        CGameManiaApp@ cachedManiaApp = null;
-        CGameManialinkPage@ cachedLocalPage = null;
-        string cachedMlSelector = "";
+        uint cacheInvalidationSerial = 1;
 
         void InvalidateCache() {
-            lastResolveMs = 0;
-            cacheEpoch = 0;
-            lastKind = BackendKind::None;
-            lastDebug = "cache invalidated";
-
-            @cachedControlTree = null;
-            @cachedMl = null;
-            @cachedLayer = null;
-            cachedLayerIx = -1;
-            @cachedManiaApp = null;
-            @cachedLocalPage = null;
-            cachedMlSelector = "";
+            cacheInvalidationSerial++;
+            if (cacheInvalidationSerial == 0) cacheInvalidationSerial = 1;
         }
     }
 
@@ -169,15 +126,30 @@ namespace UiNav {
 
         uint resolvedAtMs = 0;
 
+        string selector;
+
         uint overlay = uint(-1);
-        string path;
+        uint rootIx = uint(-1);
         CControlBase@ controlTree = null;
 
+        ManiaLinkSource source = ManiaLinkSource::CurrentApp;
         CGameManiaApp@ maniaApp = null;
         CGameManialinkPage@ localPage = null;
         CGameUILayer@ layer = null;
-        string selector;
+        int layerIx = -1;
         CGameManialinkControl@ ml = null;
+
+        bool IsControlTree() const {
+            return kind == BackendKind::ControlTree;
+        }
+
+        bool IsManiaLink() const {
+            return kind == BackendKind::ML;
+        }
+
+        bool HasSelector() const {
+            return selector.Length > 0;
+        }
 
         bool IsNull() const {
             if (kind == BackendKind::ControlTree) return controlTree is null;

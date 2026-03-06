@@ -10,6 +10,7 @@ exports = [
   "src/Exports/api.as"
 ]
 shared_exports = [
-  "src/core/types.as"
+  "src/core/types.as",
+  "src/core/builder_types.as"
 ]
 optional_dependencies = []

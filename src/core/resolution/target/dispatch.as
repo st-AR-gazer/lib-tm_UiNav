@@ -1,8 +1,6 @@
 namespace UiNav {
 
     class _TargetPlan {
-        uint uid = 0;
-
         ManiaLinkSpec@ mlRef = null;
         string mlSelectorRaw = "";
         string mlSelectorTrim = "";
@@ -18,26 +16,108 @@ namespace UiNav {
         array<string> reqAnyFrameKeys;
     }
 
-    dictionary g_TargetPlans;
-    array<uint> g_TargetPlanOrder;
-    const uint kTargetPlanMax = 512;
-    uint g_TargetPlanNextUid = 1;
+    class _TargetState {
+        uint seenInvalidationSerial = 1;
+        uint lastTouchedMs = 0;
+
+        _TargetPlan@ plan = null;
+
+        uint lastResolveMs = 0;
+        uint cacheEpoch = 0;
+        BackendKind lastKind = BackendKind::None;
+        string lastDebug = "";
+
+        CControlBase@ cachedControlTree = null;
+        uint cachedControlTreeRootIx = uint(-1);
+        CGameManialinkControl@ cachedMl = null;
+        CGameUILayer@ cachedLayer = null;
+        int cachedLayerIx = -1;
+        CGameManiaApp@ cachedManiaApp = null;
+        CGameManialinkPage@ cachedLocalPage = null;
+        string cachedMlSelector = "";
+    }
+
+    array<Target@> g_TargetStateHandles;
+    array<_TargetState@> g_TargetStateValues;
+    const uint kTargetStateMax = 512;
+    const uint kTargetPointerCacheTtlMs = 200;
+
     uint g_TargetPlanHits = 0;
     uint g_TargetPlanMisses = 0;
     uint g_TargetPlanRebuilds = 0;
 
-    void _ClearDisabledCaches(Target@ t) {
-        if (t is null) return;
-        if (t.cacheNativePointers && t.cacheTtlMs > 0) return;
+    void _ClearResolvedCache(_TargetState@ st, const string &in debug = "") {
+        if (st is null) return;
 
-        @t.cachedControlTree = null;
-        @t.cachedMl = null;
-        @t.cachedLayer = null;
-        t.cachedLayerIx = -1;
-        @t.cachedManiaApp = null;
-        @t.cachedLocalPage = null;
-        t.cachedMlSelector = "";
-        t.cacheEpoch = 0;
+        st.lastResolveMs = 0;
+        st.cacheEpoch = 0;
+        st.lastKind = BackendKind::None;
+        if (debug.Length > 0) st.lastDebug = debug;
+
+        @st.cachedControlTree = null;
+        st.cachedControlTreeRootIx = uint(-1);
+        @st.cachedMl = null;
+        @st.cachedLayer = null;
+        st.cachedLayerIx = -1;
+        @st.cachedManiaApp = null;
+        @st.cachedLocalPage = null;
+        st.cachedMlSelector = "";
+    }
+
+    _TargetState@ _FindTargetState(Target@ t, int &out ix) {
+        ix = -1;
+        if (t is null) return null;
+
+        for (uint i = 0; i < g_TargetStateHandles.Length; ++i) {
+            if (g_TargetStateHandles[i] is t) {
+                ix = int(i);
+                return g_TargetStateValues[i];
+            }
+        }
+        return null;
+    }
+
+    void _SyncTargetInvalidation(Target@ t, _TargetState@ st) {
+        if (t is null || st is null) return;
+        uint serial = t.cacheInvalidationSerial == 0 ? 1 : t.cacheInvalidationSerial;
+        if (st.seenInvalidationSerial == serial) return;
+        _ClearResolvedCache(st, "cache invalidated");
+        st.seenInvalidationSerial = serial;
+    }
+
+    _TargetState@ _GetTargetState(Target@ t, bool createIfMissing = true) {
+        if (t is null) return null;
+
+        int ix = -1;
+        auto st = _FindTargetState(t, ix);
+        if (st !is null) {
+            st.lastTouchedMs = Time::Now;
+            _SyncTargetInvalidation(t, st);
+            return st;
+        }
+
+        if (!createIfMissing) return null;
+
+        if (g_TargetStateHandles.Length >= kTargetStateMax && g_TargetStateHandles.Length > 0) {
+            uint oldestIx = 0;
+            uint oldestAt = g_TargetStateValues[0] is null ? 0 : g_TargetStateValues[0].lastTouchedMs;
+            for (uint i = 1; i < g_TargetStateValues.Length; ++i) {
+                uint at = g_TargetStateValues[i] is null ? 0 : g_TargetStateValues[i].lastTouchedMs;
+                if (at < oldestAt) {
+                    oldestAt = at;
+                    oldestIx = i;
+                }
+            }
+            g_TargetStateHandles.RemoveAt(oldestIx);
+            g_TargetStateValues.RemoveAt(oldestIx);
+        }
+
+        @st = _TargetState();
+        st.seenInvalidationSerial = t.cacheInvalidationSerial == 0 ? 1 : t.cacheInvalidationSerial;
+        st.lastTouchedMs = Time::Now;
+        g_TargetStateHandles.InsertLast(t);
+        g_TargetStateValues.InsertLast(st);
+        return st;
     }
 
     bool _LayerReqRefsMatch(const array<ManiaLinkReq@> &in cachedRefs, const array<string> &in cachedFrameKeys, const array<ManiaLinkReq@> &in refsNow) {
@@ -63,34 +143,19 @@ namespace UiNav {
         }
     }
 
-    _TargetPlan@ _GetTargetPlan(Target@ t) {
+    _TargetPlan@ _GetTargetPlan(Target@ t, _TargetState@ st = null) {
         if (t is null) return null;
+        if (st is null) @st = _GetTargetState(t);
+        if (st is null) return null;
 
-        if (t.planUid == 0) {
-            t.planUid = g_TargetPlanNextUid++;
-            if (g_TargetPlanNextUid == 0) g_TargetPlanNextUid = 1;
-        }
-
-        string key = tostring(t.planUid);
-        _TargetPlan@ plan;
-        if (g_TargetPlans.Get(key, @plan) && plan !is null) {
+        if (st.plan !is null) {
             g_TargetPlanHits++;
-            return plan;
+            return st.plan;
         }
 
         g_TargetPlanMisses++;
-        @plan = _TargetPlan();
-        plan.uid = t.planUid;
-        g_TargetPlans.Set(key, @plan);
-        g_TargetPlanOrder.InsertLast(t.planUid);
-
-        if (g_TargetPlanOrder.Length > kTargetPlanMax) {
-            uint oldUid = g_TargetPlanOrder[0];
-            g_TargetPlanOrder.RemoveAt(0);
-            g_TargetPlans.Delete(tostring(oldUid));
-        }
-
-        return plan;
+        @st.plan = _TargetPlan();
+        return st.plan;
     }
 
     void _RefreshTargetPlan(Target@ t, _TargetPlan@ plan) {
@@ -141,28 +206,22 @@ namespace UiNav {
         if (rebuilt) g_TargetPlanRebuilds++;
     }
 
-    _TargetPlan@ _EnsureTargetPlan(Target@ t) {
-        auto plan = _GetTargetPlan(t);
+    _TargetPlan@ _EnsureTargetPlan(Target@ t, _TargetState@ st = null) {
+        if (st is null) @st = _GetTargetState(t);
+        auto plan = _GetTargetPlan(t, st);
         _RefreshTargetPlan(t, plan);
         return plan;
     }
 
     void PrepareTarget(Target@ t) {
-        _EnsureTargetPlan(t);
+        auto st = _GetTargetState(t);
+        _EnsureTargetPlan(t, st);
     }
 
     void InvalidateTargetPlan(Target@ t) {
-        if (t is null || t.planUid == 0) return;
-        uint uid = t.planUid;
-        string key = tostring(uid);
-        g_TargetPlans.Delete(key);
-        for (uint i = 0; i < g_TargetPlanOrder.Length; ++i) {
-            if (g_TargetPlanOrder[i] == uid) {
-                g_TargetPlanOrder.RemoveAt(i);
-                break;
-            }
-        }
-        t.planUid = 0;
+        auto st = _GetTargetState(t, false);
+        if (st is null) return;
+        @st.plan = null;
     }
 
     uint TargetPlanCacheHits() { return g_TargetPlanHits; }
@@ -251,360 +310,126 @@ namespace UiNav {
 
         if (r.visibilityChecked) return r.visibilityOk;
         if (r.kind == BackendKind::ControlTree) return IsEffectivelyVisible(r.controlTree);
-        if (r.kind == BackendKind::ML) return UiNav::ML::IsVisible(r.ml);
+        if (r.kind == BackendKind::ML) return UiNav::ML::IsEffectivelyVisible(r.ml);
         return false;
     }
 
-    bool _ControlTreeTokenIsInt(const string &in raw) {
-        string s = raw.Trim();
-        if (s.Length == 0) return false;
-        int start = 0;
-        if (s.StartsWith("-")) {
-            if (s.Length == 1) return false;
-            start = 1;
-        }
-        for (int i = start; i < int(s.Length); ++i) {
-            string ch = s.SubStr(i, 1);
-            if (ch < "0" || ch > "9") return false;
-        }
-        return true;
-    }
-
-    bool _ControlTreeTryParseBracketIntToken(const string &in rawToken, const string &in prefixLower, int &out value) {
-        value = -1;
-        string tok = rawToken.Trim().ToLower();
-        if (!tok.StartsWith(prefixLower)) return false;
-        int closeIx = tok.LastIndexOf("]");
-        if (closeIx <= int(prefixLower.Length)) return false;
-        string inner = tok.SubStr(int(prefixLower.Length), closeIx - int(prefixLower.Length)).Trim();
-        if (!_ControlTreeTokenIsInt(inner)) return false;
-        value = Text::ParseInt(inner);
-        return value >= 0;
-    }
-
-    bool _ControlTreeHasLegacySeparator(const string &in rawPath) {
-        return rawPath.IndexOf(">") >= 0;
-    }
-
-    void _ControlTreeSplitPathTokens(const string &in rawPath, array<string> &out outTokens) {
-        outTokens.Resize(0);
-        string path = rawPath.Trim();
-        if (path.Length == 0) return;
-        if (_ControlTreeHasLegacySeparator(path)) return;
-        auto rawParts = path.Split("/");
-        for (uint i = 0; i < rawParts.Length; ++i) {
-            string t = rawParts[i].Trim();
-            if (t.Length == 0) continue;
-            outTokens.InsertLast(t);
-        }
-    }
-
-    string _ControlTreeExtractIdToken(const string &in rawToken) {
-        string tok = rawToken.Trim();
-        if (tok.Length == 0) return "";
-
-        int dummy = -1;
-        if (_ControlTreeTryParseBracketIntToken(tok, "overlay[", dummy)) return "";
-        if (_ControlTreeTryParseBracketIntToken(tok, "root[", dummy)) return "";
-        if (_ControlTreeTokenIsInt(tok)) return "";
-        if (tok.SubStr(0, 1) == "*") return "";
-
-        string lower = tok.ToLower();
-        if (lower.StartsWith("id:")) return tok.SubStr(3).Trim();
-        if (tok.StartsWith("#")) return tok.SubStr(1).Trim();
-        return tok;
-    }
-
-    bool _ControlTreePathNeedsMixedResolver(const string &in rawPath) {
-        string p = rawPath.Trim();
-        if (p.Length == 0) return false;
-        if (_ControlTreeHasLegacySeparator(p) || p.IndexOf("#") >= 0) return true;
-
-        array<string> tokens;
-        _ControlTreeSplitPathTokens(p, tokens);
-        for (uint i = 0; i < tokens.Length; ++i) {
-            string tok = tokens[i];
-            if (tok.Length == 0) continue;
-            if (tok.SubStr(0, 1) == "*") continue;
-            if (_ControlTreeTokenIsInt(tok)) continue;
-
-            int dummy = -1;
-            if (_ControlTreeTryParseBracketIntToken(tok, "overlay[", dummy)) return true;
-            if (_ControlTreeTryParseBracketIntToken(tok, "root[", dummy)) return true;
-            if (tok.ToLower().StartsWith("id:")) return true;
-            return true;
-        }
-        return false;
-    }
-
-    CControlBase@ _FindControlTreeDirectChildByIdName(CControlBase@ cur, const string &in wantLower) {
-        if (cur is null || wantLower.Length == 0) return null;
-        uint len = _ChildrenLen(cur);
-        for (uint i = 0; i < len; ++i) {
-            auto ch = _ChildAt(cur, i);
-            if (ch is null) continue;
-            string idName = ch.IdName.Trim();
-            if (idName.Length > 0 && idName.ToLower() == wantLower) return ch;
-        }
-        return null;
-    }
-
-    CControlBase@ _ResolveControlTreeMixedPathFromRoot(CControlBase@ root, const array<string> &in tokens, uint startIx = 0) {
-        if (root is null) return null;
-        CControlBase@ cur = root;
-        for (uint i = startIx; i < tokens.Length; ++i) {
-            string tok = tokens[i].Trim();
-            if (tok.Length == 0) continue;
-
-            int dummy = -1;
-            if (_ControlTreeTryParseBracketIntToken(tok, "overlay[", dummy)) continue;
-            if (_ControlTreeTryParseBracketIntToken(tok, "root[", dummy)) continue;
-
-            string idTok = _ControlTreeExtractIdToken(tok);
-            if (idTok.Length > 0) {
-                string wantLower = idTok.ToLower();
-                string curId = cur.IdName.Trim().ToLower();
-                if (curId.Length > 0 && curId == wantLower) continue;
-                auto byId = _FindControlTreeDirectChildByIdName(cur, wantLower);
-                if (byId is null) return null;
-                @cur = byId;
-                continue;
-            }
-
-            if (tok.SubStr(0, 1) == "*") {
-                uint lenW = _ChildrenLen(cur);
-                if (lenW == 0) return null;
-
-                array<int> hints;
-                _ParseWildcardHintsToken(tok, hints);
-                if (hints.Length > 0) {
-                    bool advanced = false;
-                    for (uint h = 0; h < hints.Length; ++h) {
-                        int hi = hints[h];
-                        if (hi < 0) continue;
-                        uint uhi = uint(hi);
-                        if (uhi >= lenW) continue;
-                        auto cand = _ChildAt(cur, uhi);
-                        if (cand is null) continue;
-                        @cur = cand;
-                        advanced = true;
-                        break;
-                    }
-                    if (!advanced) return null;
-                } else {
-                    auto cand0 = _ChildAt(cur, 0);
-                    if (cand0 is null) return null;
-                    @cur = cand0;
-                }
-                continue;
-            }
-
-            if (!_ControlTreeTokenIsInt(tok)) return null;
-
-            int idx = Text::ParseInt(tok);
-            if (idx < 0) return null;
-            uint uidx = uint(idx);
-            uint len = _ChildrenLen(cur);
-            if (uidx >= len) return null;
-            auto ch = _ChildAt(cur, uidx);
-            if (ch is null) return null;
-            @cur = ch;
-        }
-        return cur;
+    ControlTreeReq@ _ControlTreeSpecReq(ControlTreeSpec@ s, ControlTreeReq@ fallback = null) {
+        if (s is null) return fallback;
+        if (s.req !is null) return s.req;
+        return fallback;
     }
 
     string _ControlTreeSpecSelector(ControlTreeSpec@ s) {
         if (s is null) return "";
-        string selector = s.selector.Trim();
-        if (selector.Length > 0) return selector;
-        return s.path.Trim();
+        return s.selector.Trim();
     }
 
-    uint _ControlTreeSpecOverlay(ControlTreeSpec@ s) {
-        if (s is null) return 16;
-        if (s.req !is null) return s.req.overlay;
-        return s.overlay;
+    uint _ControlTreeSpecOverlay(ControlTreeSpec@ s, ControlTreeReq@ fallback = null) {
+        auto req = _ControlTreeSpecReq(s, fallback);
+        if (req is null) return 16;
+        return req.overlay;
     }
 
-    bool _ControlTreeSpecAnyRoot(ControlTreeSpec@ s) {
-        if (s is null) return false;
-        if (s.req !is null) return s.req.anyRoot;
-        return s.anyRoot;
+    uint _ControlTreeSpecRootIx(ControlTreeSpec@ s, ControlTreeReq@ fallback = null) {
+        auto req = _ControlTreeSpecReq(s, fallback);
+        if (req is null) return 0;
+        return req.rootIx;
     }
 
-    uint _ControlTreeSpecMaxRoots(ControlTreeSpec@ s) {
-        if (s is null) return 24;
-        if (s.req !is null) return s.req.maxRoots;
-        return s.maxRoots;
+    bool _ControlTreeSpecAnyRoot(ControlTreeSpec@ s, ControlTreeReq@ fallback = null) {
+        auto req = _ControlTreeSpecReq(s, fallback);
+        return req !is null && req.anyRoot;
     }
 
-    bool _ControlTreeSpecHintsOnly(ControlTreeSpec@ s) {
-        if (s is null) return false;
-        if (s.req !is null) return s.req.hintsOnly;
-        return s.hintsOnly;
+    uint _ControlTreeSpecMaxRoots(ControlTreeSpec@ s, ControlTreeReq@ fallback = null) {
+        auto req = _ControlTreeSpecReq(s, fallback);
+        if (req is null) return 24;
+        return req.maxRoots;
     }
 
-    bool _ControlTreeSpecSmart(ControlTreeSpec@ s) {
-        if (s is null) return false;
-        if (s.req !is null) return s.req.smart;
-        return s.smart;
+    ControlTreeSearchMode _ControlTreeSpecSearchMode(ControlTreeSpec@ s, ControlTreeReq@ fallback = null) {
+        auto req = _ControlTreeSpecReq(s, fallback);
+        if (req is null) return ControlTreeSearchMode::Exact;
+        return req.searchMode;
     }
 
-    string _ControlTreeSpecGuardStartsWith(ControlTreeSpec@ s) {
-        if (s is null) return "";
-        if (s.req !is null) return s.req.guardStartsWith;
-        return s.guardStartsWith;
-    }
-
-    CControlBase@ _ResolveControlTreeMixedPath(ControlTreeSpec@ s, const string &in rawPath) {
-        if (s is null) return null;
-
-        array<string> tokens;
-        _ControlTreeSplitPathTokens(rawPath, tokens);
-        if (tokens.Length == 0) return null;
-
-        uint startIx = 0;
-        int rootHint = -1;
-        int overlayHint = -1;
-        while (startIx < tokens.Length) {
-            int parsed = -1;
-            if (_ControlTreeTryParseBracketIntToken(tokens[startIx], "overlay[", parsed)) {
-                overlayHint = parsed;
-                startIx++;
-                continue;
-            }
-            if (_ControlTreeTryParseBracketIntToken(tokens[startIx], "root[", parsed)) {
-                rootHint = parsed;
-                startIx++;
-                continue;
-            }
-            break;
-        }
-
-        uint overlay = _ControlTreeSpecOverlay(s);
-        if (overlayHint >= 0) overlay = uint(overlayHint);
-
-        if (rootHint >= 0) {
-            CScene2d@ scene;
-            if (!_GetScene2d(overlay, scene) || scene is null) return null;
-            if (uint(rootHint) >= scene.Mobils.Length) return null;
-            auto root = _RootFromMobil(scene, uint(rootHint));
-            if (root is null) return null;
-            return _ResolveControlTreeMixedPathFromRoot(root, tokens, startIx);
-        }
-
-        if (_ControlTreeSpecAnyRoot(s)) {
-            CScene2d@ scene;
-            if (!_GetScene2d(overlay, scene) || scene is null) return null;
-            uint roots = Math::Min(_ControlTreeSpecMaxRoots(s), scene.Mobils.Length);
-            for (uint r = 0; r < roots; ++r) {
-                auto root = _RootFromMobil(scene, r);
-                if (root is null) continue;
-                auto found = _ResolveControlTreeMixedPathFromRoot(root, tokens, startIx);
-                if (found !is null) return found;
-            }
-            return null;
-        }
-
-        CControlFrame@ root = RootAtOverlay(overlay);
-        if (root is null) return null;
-        return _ResolveControlTreeMixedPathFromRoot(root, tokens, startIx);
-    }
-
-    CControlBase@ _FindControlTreeByIdNameRec(CControlBase@ cur, const string &in wantLower, uint depth = 0, uint maxDepth = 256) {
-        if (cur is null) return null;
-        if (depth > maxDepth) return null;
-
-        string idName = cur.IdName.Trim();
-        if (idName.Length > 0 && idName.ToLower() == wantLower) return cur;
-
-        uint len = _ChildrenLen(cur);
-        for (uint i = 0; i < len; ++i) {
-            auto ch = _ChildAt(cur, i);
-            if (ch is null) continue;
-            auto found = _FindControlTreeByIdNameRec(ch, wantLower, depth + 1, maxDepth);
-            if (found !is null) return found;
-        }
-        return null;
-    }
-
-    CControlBase@ _ResolveControlTreeByIdName(ControlTreeSpec@ s) {
-        if (s is null) return null;
-        string want = s.idName.Trim().ToLower();
-        if (want.Length == 0) return null;
-
-        uint overlay = _ControlTreeSpecOverlay(s);
-        if (_ControlTreeSpecAnyRoot(s)) {
-            CScene2d@ scene;
-            if (!_GetScene2d(overlay, scene)) return null;
-            uint roots = Math::Min(_ControlTreeSpecMaxRoots(s), scene.Mobils.Length);
-            for (uint r = 0; r < roots; ++r) {
-                CControlFrame@ root = _RootFromMobil(scene, r);
-                if (root is null) continue;
-                auto found = _FindControlTreeByIdNameRec(root, want);
-                if (found !is null) return found;
-            }
-            return null;
-        }
-
-        CControlFrame@ root = RootAtOverlay(overlay);
-        if (root is null) return null;
-        return _FindControlTreeByIdNameRec(root, want);
+    string _ControlTreeSpecGuardStartsWith(ControlTreeSpec@ s, ControlTreeReq@ fallback = null) {
+        auto req = _ControlTreeSpecReq(s, fallback);
+        if (req is null) return "";
+        return req.guardStartsWith;
     }
 
     string _ControlTreeSpecDebugSelector(ControlTreeSpec@ s) {
-        if (s is null) return "";
-        string selector = _ControlTreeSpecSelector(s);
-        if (selector.Length > 0) return selector;
-        if (s.idName.Length > 0) return "id:" + s.idName;
-        return "";
+        return _ControlTreeSpecSelector(s);
     }
 
-    CControlBase@ _ResolveControlTreeSpec(ControlTreeSpec@ s) {
+    CControlBase@ _ResolveControlTreeSpec(ControlTreeSpec@ s, ControlTreeReq@ fallback, uint &out matchedRootIx) {
+        matchedRootIx = uint(-1);
         if (s is null) return null;
-        uint overlay = _ControlTreeSpecOverlay(s);
 
-        string path = _ControlTreeSpecSelector(s);
-        if (_ControlTreeHasLegacySeparator(path)) return null;
-        if (path.Length > 0) {
-            bool mixedSyntax = _ControlTreePathNeedsMixedResolver(path);
-            if (mixedSyntax) {
-                auto mixed = _ResolveControlTreeMixedPath(s, path);
-                if (mixed !is null) return mixed;
-                return _ResolveControlTreeByIdName(s);
-            }
+        string selector = _ControlTreeSpecSelector(s);
+        if (selector.Length == 0) return null;
 
-            if (_ControlTreeSpecAnyRoot(s)) {
-                if (SpecHasWildcard(path)) {
-                    if (_ControlTreeSpecHintsOnly(s)) return ResolvePathHintsOnlyAnyRoot(path, overlay);
-                    return ResolvePathAnyRoot(path, overlay, _ControlTreeSpecMaxRoots(s));
+        uint overlay = _ControlTreeSpecOverlay(s, fallback);
+        auto mode = _ControlTreeSpecSearchMode(s, fallback);
+        string guard = _ControlTreeSpecGuardStartsWith(s, fallback);
+
+        if (_ControlTreeSpecAnyRoot(s, fallback)) {
+            CScene2d@ scene;
+            if (!_GetScene2d(overlay, scene) || scene is null) return null;
+
+            uint rootsLen = scene.Mobils.Length;
+            if (rootsLen == 0) return null;
+
+            uint maxRoots = Math::Min(_ControlTreeSpecMaxRoots(s, fallback), rootsLen);
+            if (maxRoots == 0) return null;
+
+            uint preferred = _ControlTreeSpecRootIx(s, fallback);
+            if (preferred < maxRoots) {
+                auto root = _RootFromMobil(scene, preferred);
+                auto found = UiNav::CT::ResolveSelector(selector, root, mode, guard);
+                if (found !is null) {
+                    matchedRootIx = preferred;
+                    return found;
                 }
-                return ResolvePathExactAnyRoot(path, overlay);
             }
 
-            if (_ControlTreeSpecHintsOnly(s)) {
-                return ResolvePathHintsOnly(path, overlay);
-            }
-
-            if (_ControlTreeSpecSmart(s)) {
-                string guard = _ControlTreeSpecGuardStartsWith(s);
-                if (guard.Length > 0) {
-                    return ResolvePathSmartGuarded(path, guard, overlay);
+            for (uint r = 0; r < maxRoots; ++r) {
+                if (r == preferred) continue;
+                auto root = _RootFromMobil(scene, r);
+                auto found = UiNav::CT::ResolveSelector(selector, root, mode, guard);
+                if (found !is null) {
+                    matchedRootIx = r;
+                    return found;
                 }
-                return ResolvePathSmart(path, overlay);
             }
 
-            auto resolved = ResolvePath(path, overlay);
-            if (resolved !is null) return resolved;
+            return null;
         }
 
-        return _ResolveControlTreeByIdName(s);
+        uint rootIx = _ControlTreeSpecRootIx(s, fallback);
+        CControlBase@ root = null;
+        if (rootIx == 0) {
+            @root = RootAtOverlay(overlay);
+        } else {
+            CScene2d@ scene;
+            if (!_GetScene2d(overlay, scene) || scene is null) return null;
+            if (rootIx >= scene.Mobils.Length) return null;
+            @root = _RootFromMobil(scene, rootIx);
+        }
+        if (root is null) return null;
+
+        auto found = UiNav::CT::ResolveSelector(selector, root, mode, guard);
+        if (found is null) return null;
+        matchedRootIx = rootIx;
+        return found;
     }
 
-    ManiaLinkReq@ _ManiaLinkSpecReq(ManiaLinkSpec@ s) {
-        if (s is null) return null;
+    ManiaLinkReq@ _ManiaLinkSpecReq(ManiaLinkSpec@ s, ManiaLinkReq@ fallback = null) {
+        if (s is null) return fallback;
         if (s.req !is null) return s.req;
-        return s.layer;
+        return fallback;
     }
 
     string _ManiaLinkSpecSelector(ManiaLinkSpec@ s) {
@@ -612,23 +437,32 @@ namespace UiNav {
         return s.selector.Trim();
     }
 
-    NodeRef@ ResolveControlTree(Target@ t) {
-        if (t is null || t.controlTree is null) return null;
+    bool _ResolveMlSource(const ManiaLinkReq@ req, ManiaLinkSource &out source, CGameManiaApp@ &out app) {
+        ManiaLinkSource requested = (req is null) ? ManiaLinkSource::CurrentApp : req.source;
+        return UiNav::Layers::_ResolveLayerSource(requested, source, app);
+    }
 
-        if (t.cacheNativePointers && t.cacheTtlMs > 0 && t.cachedControlTree !is null && t.cacheEpoch == UiNav::Context::Epoch() && (Time::Now - t.lastResolveMs) <= t.cacheTtlMs) {
-            if (t.controlTree.requireVisible && !IsEffectivelyVisible(t.cachedControlTree)) {
-                @t.cachedControlTree = null;
-                t.cacheEpoch = 0;
+    NodeRef@ ResolveControlTree(Target@ t, _TargetState@ st = null) {
+        if (t is null || t.controlTree is null) return null;
+        if (st is null) @st = _GetTargetState(t);
+        if (st is null) return null;
+
+        if (st.cachedControlTree !is null && st.cacheEpoch == UiNav::Context::Epoch() && (Time::Now - st.lastResolveMs) <= kTargetPointerCacheTtlMs) {
+            if (t.controlTree.requireVisible && !IsEffectivelyVisible(st.cachedControlTree)) {
+                @st.cachedControlTree = null;
+                st.cachedControlTreeRootIx = uint(-1);
+                st.cacheEpoch = 0;
             } else {
                 auto r = NodeRef();
                 r.kind = BackendKind::ControlTree;
-                r.overlay = _ControlTreeSpecOverlay(t.controlTree);
-                r.path = _ControlTreeSpecDebugSelector(t.controlTree);
-                @r.controlTree = t.cachedControlTree;
+                r.selector = _ControlTreeSpecDebugSelector(t.controlTree);
+                r.overlay = _ControlTreeSpecOverlay(t.controlTree, null);
+                r.rootIx = st.cachedControlTreeRootIx;
+                @r.controlTree = st.cachedControlTree;
                 r.debug = "cached controlTree";
                 r.visibilityChecked = t.controlTree.requireVisible;
                 r.visibilityOk = t.controlTree.requireVisible;
-                r.resolvedAtMs = t.lastResolveMs;
+                r.resolvedAtMs = st.lastResolveMs;
                 return r;
             }
         }
@@ -637,57 +471,67 @@ namespace UiNav {
         tries.InsertLast(t.controlTree);
         for (uint i = 0; i < t.controlTree.alts.Length; ++i) tries.InsertLast(t.controlTree.alts[i]);
 
+        auto primaryReq = _ControlTreeSpecReq(t.controlTree, null);
         for (uint i = 0; i < tries.Length; ++i) {
             auto s = tries[i];
-            auto n = _ResolveControlTreeSpec(s);
+            if (s is null) continue;
+            uint matchedRootIx = uint(-1);
+            auto n = _ResolveControlTreeSpec(s, primaryReq, matchedRootIx);
             if (n is null) continue;
 
             if (s.requireVisible && !IsEffectivelyVisible(n)) continue;
 
-            t.lastResolveMs = Time::Now;
-            if (t.cacheNativePointers && t.cacheTtlMs > 0) {
-                @t.cachedControlTree = n;
-                t.cacheEpoch = UiNav::Context::Epoch();
-            } else {
-                @t.cachedControlTree = null;
-                t.cacheEpoch = 0;
-            }
-            t.lastKind = BackendKind::ControlTree;
+            st.lastResolveMs = Time::Now;
+            @st.cachedControlTree = n;
+            st.cachedControlTreeRootIx = matchedRootIx;
+            st.cacheEpoch = UiNav::Context::Epoch();
+            st.lastKind = BackendKind::ControlTree;
 
             auto r = NodeRef();
             r.kind = BackendKind::ControlTree;
-            r.overlay = _ControlTreeSpecOverlay(s);
-            r.path = _ControlTreeSpecDebugSelector(s);
+            r.selector = _ControlTreeSpecDebugSelector(s);
+            r.overlay = _ControlTreeSpecOverlay(s, primaryReq);
+            r.rootIx = matchedRootIx;
             @r.controlTree = n;
             r.debug = "controlTree resolved";
             r.visibilityChecked = s.requireVisible;
             r.visibilityOk = s.requireVisible;
-            r.resolvedAtMs = t.lastResolveMs;
+            r.resolvedAtMs = st.lastResolveMs;
             return r;
         }
 
         return null;
     }
 
-    NodeRef@ ResolveML(Target@ t, _TargetPlan@ plan = null) {
+    NodeRef@ ResolveML(Target@ t, _TargetPlan@ plan = null, _TargetState@ st = null) {
         if (t is null || t.ml is null) return null;
+        if (st is null) @st = _GetTargetState(t);
+        if (st is null) return null;
 
-        if (t.cacheNativePointers && t.cacheTtlMs > 0 && t.cachedMl !is null && t.cachedLayer !is null && t.cacheEpoch == UiNav::Context::Epoch() && (Time::Now - t.lastResolveMs) <= t.cacheTtlMs) {
-            auto app = UiNav::Layers::GetManiaApp();
+        if (st.cachedMl !is null && st.cachedLayer !is null && st.cacheEpoch == UiNav::Context::Epoch() && (Time::Now - st.lastResolveMs) <= kTargetPointerCacheTtlMs) {
+            auto req = _ManiaLinkSpecReq(t.ml, null);
+            ManiaLinkSource resolvedSource = ManiaLinkSource::CurrentApp;
+            CGameManiaApp@ app = null;
             bool ok = false;
-            if (app !is null && app is t.cachedManiaApp) {
-                auto layers = app.UILayers;
-                int ix = t.cachedLayerIx;
-                if (ix >= 0 && ix < int(layers.Length) && layers[uint(ix)] is t.cachedLayer) {
-                    if (t.cachedLocalPage !is null && layers[uint(ix)].LocalPage is t.cachedLocalPage) {
-                        ok = true;
+            if (_ResolveMlSource(req, resolvedSource, app)) {
+                int ix = st.cachedLayerIx;
+                uint layersLen = UiNav::Layers::_LayerCountForSource(resolvedSource, app);
+                if (ix >= 0 && ix < int(layersLen)) {
+                    auto layer = UiNav::Layers::_LayerAtSource(resolvedSource, app, uint(ix));
+                    if (layer !is null && layer is st.cachedLayer) {
+                        if (st.cachedLocalPage !is null && layer.LocalPage is st.cachedLocalPage && app is st.cachedManiaApp) {
+                            ok = true;
+                        }
+                        if (resolvedSource == ManiaLinkSource::Editor && st.cachedManiaApp is null && layer.LocalPage is st.cachedLocalPage) {
+                            ok = true;
+                        }
                     }
                 }
             }
 
             if (ok) {
                 bool visReq = (t.ml !is null) ? t.ml.requireVisible : false;
-                if (visReq && !UiNav::ML::IsVisible(t.cachedMl)) {
+                if (visReq && !UiNav::ML::IsEffectivelyVisible(st.cachedMl)) {
                     ok = false;
                 }
             }
@@ -695,34 +539,37 @@ namespace UiNav {
             if (ok) {
                 auto r = NodeRef();
                 r.kind = BackendKind::ML;
-                @r.maniaApp = t.cachedManiaApp;
-                @r.localPage = t.cachedLocalPage;
-                @r.layer = t.cachedLayer;
-                r.selector = (t.cachedMlSelector.Length > 0) ? t.cachedMlSelector : _ManiaLinkSpecSelector(t.ml);
-                @r.ml = t.cachedMl;
+                r.source = resolvedSource;
+                @r.maniaApp = st.cachedManiaApp;
+                @r.localPage = st.cachedLocalPage;
+                @r.layer = st.cachedLayer;
+                r.layerIx = st.cachedLayerIx;
+                r.selector = (st.cachedMlSelector.Length > 0) ? st.cachedMlSelector : _ManiaLinkSpecSelector(t.ml);
+                @r.ml = st.cachedMl;
                 r.debug = "cached ml (validated)";
                 r.visibilityChecked = (t.ml !is null) ? t.ml.requireVisible : false;
                 r.visibilityOk = r.visibilityChecked;
-                r.resolvedAtMs = t.lastResolveMs;
+                r.resolvedAtMs = st.lastResolveMs;
                 return r;
             }
 
-            @t.cachedMl = null;
-            @t.cachedLayer = null;
-            t.cachedLayerIx = -1;
-            @t.cachedManiaApp = null;
-            @t.cachedLocalPage = null;
-            t.cachedMlSelector = "";
-            t.cacheEpoch = 0;
+            @st.cachedMl = null;
+            @st.cachedLayer = null;
+            st.cachedLayerIx = -1;
+            @st.cachedManiaApp = null;
+            @st.cachedLocalPage = null;
+            st.cachedMlSelector = "";
+            st.cacheEpoch = 0;
         }
 
         array<ManiaLinkSpec@> tries;
         tries.InsertLast(t.ml);
         for (uint i = 0; i < t.ml.alts.Length; ++i) tries.InsertLast(t.ml.alts[i]);
 
+        auto primaryReq = _ManiaLinkSpecReq(t.ml, null);
         for (uint i = 0; i < tries.Length; ++i) {
             auto s = tries[i];
-            auto req = _ManiaLinkSpecReq(s);
+            auto req = _ManiaLinkSpecReq(s, primaryReq);
             if (s is null || req is null) continue;
 
             int layerIx = -1;
@@ -748,40 +595,35 @@ namespace UiNav {
 
             if (layer.LocalPage !is page) continue;
 
-            if (s.requireVisible && !UiNav::ML::IsVisible(node)) continue;
+            if (s.requireVisible && !UiNav::ML::IsEffectivelyVisible(node)) continue;
 
-            t.lastResolveMs = Time::Now;
-            auto appNow = UiNav::Layers::GetManiaApp();
-            if (t.cacheNativePointers && t.cacheTtlMs > 0) {
-                @t.cachedLayer = layer;
-                t.cachedLayerIx = layerIx;
-                @t.cachedMl = node;
-                @t.cachedManiaApp = appNow;
-                @t.cachedLocalPage = page;
-                t.cachedMlSelector = resolvedSelector;
-                t.cacheEpoch = UiNav::Context::Epoch();
-            } else {
-                @t.cachedLayer = null;
-                t.cachedLayerIx = -1;
-                @t.cachedMl = null;
-                @t.cachedManiaApp = null;
-                @t.cachedLocalPage = null;
-                t.cachedMlSelector = "";
-                t.cacheEpoch = 0;
-            }
-            t.lastKind = BackendKind::ML;
+            ManiaLinkSource resolvedSource = ManiaLinkSource::CurrentApp;
+            CGameManiaApp@ appNow = null;
+            if (!_ResolveMlSource(req, resolvedSource, appNow)) continue;
+
+            st.lastResolveMs = Time::Now;
+            @st.cachedLayer = layer;
+            st.cachedLayerIx = layerIx;
+            @st.cachedMl = node;
+            @st.cachedManiaApp = appNow;
+            @st.cachedLocalPage = page;
+            st.cachedMlSelector = resolvedSelector;
+            st.cacheEpoch = UiNav::Context::Epoch();
+            st.lastKind = BackendKind::ML;
 
             auto r = NodeRef();
             r.kind = BackendKind::ML;
+            r.source = resolvedSource;
             @r.maniaApp = appNow;
             @r.localPage = page;
             @r.layer = layer;
+            r.layerIx = layerIx;
             r.selector = resolvedSelector;
             @r.ml = node;
             r.debug = "ml resolved";
             r.visibilityChecked = s.requireVisible;
             r.visibilityOk = s.requireVisible;
-            r.resolvedAtMs = t.lastResolveMs;
+            r.resolvedAtMs = st.lastResolveMs;
             return r;
         }
 
@@ -791,25 +633,25 @@ namespace UiNav {
     NodeRef@ _ResolveInternal(Target@ t, bool checkRequirements = true, _TargetPlan@ plan = null) {
         if (t is null) return null;
         uint startedAt = Time::Now;
+        auto st = _GetTargetState(t);
+        if (st is null) return null;
 
         if (plan is null) {
-            @plan = _EnsureTargetPlan(t);
+            @plan = _EnsureTargetPlan(t, st);
         }
 
         UiNav::Context::Refresh();
         uint epochNow = UiNav::Context::Epoch();
-        if (t.cacheEpoch != 0 && t.cacheEpoch != epochNow) {
-            t.InvalidateCache();
+        if (st.cacheEpoch != 0 && st.cacheEpoch != epochNow) {
+            _ClearResolvedCache(st, "cache invalidated");
         }
 
-        _ClearDisabledCaches(t);
         UiNav::Trace::Ev("Resolve.begin", t);
 
         if (checkRequirements && t.req !is null) {
             bool reqOk = CheckRequirements(t, plan);
             if (!reqOk) {
-                t.InvalidateCache();
-                t.lastDebug = "requirements failed";
+                _ClearResolvedCache(st, "requirements failed");
                 if (t.req.strict) {
                     UiNav::Metrics::Record("resolve", Time::Now - startedAt);
                     return null;
@@ -818,26 +660,39 @@ namespace UiNav {
         }
 
         NodeRef@ r = null;
+        bool hasCt = t.controlTree !is null;
+        bool hasMl = t.ml !is null;
 
-        if (t.pref == BackendPref::PreferControlTree) {
-            @r = ResolveControlTree(t);
-            if (r is null) @r = ResolveML(t, plan);
-        } else if (t.pref == BackendPref::PreferML) {
-            @r = ResolveML(t, plan);
-            if (r is null) @r = ResolveControlTree(t);
-        } else {
-            if (t.ml !is null) {
-                @r = ResolveML(t, plan);
-                if (r is null) @r = ResolveControlTree(t);
-            } else {
-                @r = ResolveControlTree(t);
-            }
+        if (hasCt && hasMl && t.pref == BackendPref::Unspecified) {
+            st.lastDebug = "backend preference required when both ml and controlTree are configured";
+            UiNav::Trace::Ev("Resolve.fail", t, null, st.lastDebug);
+            UiNav::Metrics::Record("resolve", Time::Now - startedAt);
+            return null;
         }
 
-        if (r is null) t.lastDebug = "resolve failed";
-        else t.lastDebug = r.debug;
+        if (!hasCt && !hasMl) {
+            st.lastDebug = "resolve failed";
+            UiNav::Trace::Ev("Resolve.fail", t, null, st.lastDebug);
+            UiNav::Metrics::Record("resolve", Time::Now - startedAt);
+            return null;
+        }
 
-        if (r is null) UiNav::Trace::Ev("Resolve.fail", t, null, t.lastDebug);
+        if (hasCt && !hasMl) {
+            @r = ResolveControlTree(t, st);
+        } else if (hasMl && !hasCt) {
+            @r = ResolveML(t, plan, st);
+        } else if (t.pref == BackendPref::PreferControlTree) {
+            @r = ResolveControlTree(t, st);
+            if (r is null) @r = ResolveML(t, plan, st);
+        } else {
+            @r = ResolveML(t, plan, st);
+            if (r is null) @r = ResolveControlTree(t, st);
+        }
+
+        if (r is null) st.lastDebug = "resolve failed";
+        else st.lastDebug = r.debug;
+
+        if (r is null) UiNav::Trace::Ev("Resolve.fail", t, null, st.lastDebug);
         else UiNav::Trace::Ev("Resolve.ok", t, r);
         UiNav::Metrics::Record("resolve", Time::Now - startedAt);
         return r;
@@ -883,7 +738,8 @@ namespace UiNav {
             return res;
         }
 
-        auto plan = _EnsureTargetPlan(t);
+        auto st = _GetTargetState(t);
+        auto plan = _EnsureTargetPlan(t, st);
 
         if (t.req !is null) {
             if (!CheckRequirements(t, plan)) {
@@ -901,8 +757,8 @@ namespace UiNav {
         }
 
         if (r.kind == BackendKind::ML) {
-            if (!ValidateML(r)) {
-                auto res = _MakeOpResult(OpStatus::InvalidBackendRef, r, "ValidateML failed");
+            if (!UiNav::ML::ValidateRef(r)) {
+                auto res = _MakeOpResult(OpStatus::InvalidBackendRef, r, "ValidateRef failed");
                 UiNav::Trace::Ev(opName + ".fail", t, r, "status=" + _OpStatusName(res.status) + " reason=" + res.reason);
                 return res;
             }
@@ -1030,25 +886,37 @@ namespace UiNav {
         return res.text;
     }
 
-    bool ValidateML(NodeRef@ r) {
+    bool _ValidateMLRef(NodeRef@ r) {
         if (r is null) return false;
         if (r.kind != BackendKind::ML) return true;
         if (r.layer is null || r.ml is null) return false;
+        if (r.localPage is null) return false;
 
-        if (r.maniaApp is null || r.localPage is null) return false;
+        CGameManiaApp@ app = null;
+        ManiaLinkSource resolvedSource = r.source;
+        if (!UiNav::Layers::_ResolveLayerSource(r.source, resolvedSource, app)) return false;
 
-        auto app = UiNav::Layers::GetManiaApp();
-        if (app is null) return false;
-        if (app !is r.maniaApp) return false;
-
-        auto layers = app.UILayers;
-        for (uint i = 0; i < layers.Length; ++i) {
-            if (layers[i] is r.layer) {
-                return layers[i].LocalPage is r.localPage;
+        uint layersLen = UiNav::Layers::_LayerCountForSource(resolvedSource, app);
+        for (uint i = 0; i < layersLen; ++i) {
+            auto layer = UiNav::Layers::_LayerAtSource(resolvedSource, app, i);
+            if (layer is r.layer) {
+                if (resolvedSource != ManiaLinkSource::Editor && app !is r.maniaApp) return false;
+                if (resolvedSource == ManiaLinkSource::Editor && r.maniaApp !is null) return false;
+                return layer.LocalPage is r.localPage;
             }
         }
 
         return false;
     }
 
+}
+
+namespace UiNav {
+namespace ML {
+
+    bool ValidateRef(NodeRef@ r) {
+        return UiNav::_ValidateMLRef(r);
+    }
+
+}
 }

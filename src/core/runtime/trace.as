@@ -55,9 +55,9 @@ namespace Trace {
         if (r is null) return "ref=null";
         string s = "kind=" + _KindStr(r.kind) + " dbg=" + r.debug;
         if (r.kind == BackendKind::ControlTree) {
-            s += " ov=" + r.overlay + " path=" + r.path;
+            s += " ov=" + r.overlay + " root=" + r.rootIx + " selector=" + r.selector;
         } else if (r.kind == BackendKind::ML) {
-            s += " sel=" + r.selector;
+            s += " src=" + int(r.source) + " layer=" + r.layerIx + " selector=" + r.selector;
         }
         return s;
     }

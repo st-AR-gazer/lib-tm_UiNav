@@ -425,14 +425,18 @@ namespace Debug {
     string _MlFirstClassSelector(CGameManialinkControl@ n, string &out classList) {
         classList = "";
         if (n is null) return "";
-        auto classes = n.ControlClasses;
         string firstClass = "";
-        for (uint i = 0; i < classes.Length; ++i) {
-            string c = classes[i];
-            if (c.Length == 0) continue;
-            if (classList.Length > 0) classList += ", ";
-            classList += c;
-            if (firstClass.Length == 0) firstClass = c;
+        try {
+            auto classes = n.ControlClasses;
+            for (uint i = 0; i < classes.Length; ++i) {
+                string c = classes[i];
+                if (c.Length == 0) continue;
+                if (classList.Length > 0) classList += ", ";
+                classList += c;
+                if (firstClass.Length == 0) firstClass = c;
+            }
+        } catch {
+            return "";
         }
         if (firstClass.Length == 0) return "";
         return "." + firstClass;

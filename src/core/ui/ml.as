@@ -21,6 +21,28 @@ namespace ML {
         return f.Controls[idx];
     }
 
+    CControlBase@ _TryGetControl(CGameManialinkControl@ n) {
+        if (n is null) return null;
+        CControlBase@ c = null;
+        try {
+            @c = n.Control;
+        } catch {
+            @c = null;
+        }
+        return c;
+    }
+
+    CGameManialinkControl@ _TryGetParent(CGameManialinkControl@ n) {
+        if (n is null) return null;
+        CGameManialinkControl@ p = null;
+        try {
+            @p = n.Parent;
+        } catch {
+            @p = null;
+        }
+        return p;
+    }
+
     string TypeName(CGameManialinkControl@ n) {
         if (n is null) return "null";
         if (cast<CGameManialinkFrame>(n) !is null) return "Frame";
@@ -32,24 +54,52 @@ namespace ML {
 
     string ControlId(CGameManialinkControl@ n) {
         if (n is null) return "";
-        return n.ControlId;
+        try {
+            return n.ControlId;
+        } catch {
+            return "";
+        }
     }
 
     bool HasClass(CGameManialinkControl@ n, const string &in cls) {
         if (n is null || cls.Length == 0) return false;
-        return n.HasClass(cls);
+        try {
+            return n.HasClass(cls);
+        } catch {
+            return false;
+        }
     }
 
     string ReadText(CGameManialinkControl@ n) {
         if (n is null) return "";
-        auto c = n.Control;
+        auto c = _TryGetControl(n);
         if (c is null) return "";
         return UiNav::ReadText(c);
     }
 
-    bool IsVisible(CGameManialinkControl@ n) {
+    bool IsVisibleSelf(CGameManialinkControl@ n) {
         if (n is null) return false;
-        return n.Visible;
+        try {
+            return n.Visible;
+        } catch {
+            return false;
+        }
+    }
+
+    bool IsEffectivelyVisible(CGameManialinkControl@ n) {
+        if (!IsVisibleSelf(n)) return false;
+
+        auto cur = _TryGetParent(n);
+        uint depth = 0;
+        while (cur !is null && depth < 256) {
+            if (!IsVisibleSelf(cur)) return false;
+            @cur = _TryGetParent(cur);
+            depth++;
+        }
+
+        auto c = _TryGetControl(n);
+        if (c !is null && !UiNav::IsEffectivelyVisible(c)) return false;
+        return true;
     }
 
     CGameManialinkControl@ FindFirstById(CGameManialinkControl@ root, const string &in id) {
@@ -64,7 +114,7 @@ namespace ML {
             auto cur = q[head++];
             if (cur is null) continue;
 
-            if (cur.ControlId == id) return cur;
+            if (ControlId(cur) == id) return cur;
 
             uint len = _ChildrenLen(cur);
             for (uint i = 0; i < len; ++i) {
@@ -87,7 +137,7 @@ namespace ML {
             auto cur = q[head++];
             if (cur is null) continue;
 
-            if (cur.HasClass(cls)) return cur;
+            if (HasClass(cur, cls)) return cur;
 
             uint len = _ChildrenLen(cur);
             for (uint i = 0; i < len; ++i) {
@@ -162,16 +212,14 @@ namespace ML {
             return t;
         }
 
-        t.isId = true;
-        t.id = s;
-        return t;
+        return null;
     }
 
     bool _MatchTok(CGameManialinkControl@ n, _Tok@ tok) {
         if (n is null || tok is null) return false;
         if (tok.isAny) return true;
-        if (tok.isId) return n.ControlId == tok.id;
-        if (tok.isClass) return n.HasClass(tok.cls);
+        if (tok.isId) return ControlId(n) == tok.id;
+        if (tok.isClass) return HasClass(n, tok.cls);
         return false;
     }
 
@@ -391,7 +439,7 @@ namespace ML {
     bool Click(CGameManialinkControl@ n, bool childFallback = true) {
         if (n is null) return false;
 
-        auto c = n.Control;
+        auto c = _TryGetControl(n);
         if (c !is null) {
             return UiNav::ClickControlNode(c, childFallback);
         }
@@ -408,7 +456,7 @@ namespace ML {
             return true;
         }
 
-        auto c = n.Control;
+        auto c = _TryGetControl(n);
         if (c is null) return false;
         return UiNav::SetTextControlNode(c, text);
     }
@@ -940,7 +988,7 @@ string _xml_escape(const string &in s) {
         auto classes = n.ControlClasses;
         if (classes.Length > 0) cls = classes[0];
 
-        auto controlTree = n.Control;
+        auto controlTree = _TryGetControl(n);
         string controlTreeType = "";
         bool controlTreeVis = false;
         bool controlTreeHiddenExt = false;

@@ -3,7 +3,8 @@ namespace Debug {
 
     string _MlNoteAnchorToken(CGameManialinkControl@ n, int childIx = -1) {
         if (n is null) return "<null>";
-        if (n.ControlId.Length > 0) return "#" + n.ControlId;
+        string controlId = UiNav::ML::ControlId(n);
+        if (controlId.Length > 0) return "#" + controlId;
         string classList;
         string classSel = _MlFirstClassSelector(n, classList);
         if (classSel.Length > 0) return classSel;

@@ -26,11 +26,11 @@ UiNav exports its API as dependency exports, so you can call `UiNav::...` direct
 UiNav intentionally keeps a strict public surface:
 
 - Exported imports: `src/Exports/api.as`
-- Shared types: `src/core/types.as` (declared `shared`)
+- Shared types: `src/core/types.as`, `src/core/builder_types.as` (declared `shared`)
 
-Everything else under `src/core/*` (other than `types.as`) and all debug tooling under `src/debug/*` is internal and may change.
+Everything else under `src/core/*` (other than those shared type files) and all debug tooling under `src/debug/*` is internal and may change.
 
-Note: `src/Exports/types.as` currently exists but is empty; types are provided via `shared_exports = ["src/core/types.as"]` in `info.toml`.
+Note: `src/Exports/types.as` currently exists but is empty; shared types are provided via `shared_exports` in `info.toml`.
 
 ### Version gating
 
@@ -45,7 +45,7 @@ if (!UiNav::ApiVersionAtLeast(0, 1, 0)) {
 ### Backend enums
 
 - `BackendKind`: `None`, `ControlTree`, `ML`
-- `BackendPref`: `Auto`, `PreferControlTree`, `PreferML`
+- `BackendPref`: `Unspecified`, `PreferControlTree`, `PreferML`
 - `OpStatus`: `Ok`, `InvalidTarget`, `RequirementsFailed`, `ResolveFailed`, `InvalidBackendRef`, `NotVisible`, `ActionFailed`, `TimedOut`
 
 ### `Target`
@@ -56,19 +56,16 @@ You typically allocate it once and keep reusing it.
 Key fields:
 
 - `name`: debug label (shows up in trace/diagnostics)
-- `pref`: backend preference (`Auto` tries ML first if `ml` exists)
+- `pref`: backend preference
 - `ml`: `ManiaLinkSpec@` (optional)
 - `controlTree`: `ControlTreeSpec@` (optional)
 - `req`: `Requires@` (optional preconditions)
-- Caching:
-  - `cacheNativePointers` (default `true`)
-  - `cacheTtlMs` (default `200`)
 
-If you're targeting volatile UI (scoreboards, dynamic lists), disable caching:
+`Target` is declarative now; pointer caching is internal to UiNav. If you need to flush cached native refs manually:
 
 ```angelscript
-t.cacheNativePointers = false;
-t.cacheTtlMs = 0;
+t.InvalidateCache();
+UiNav::InvalidateTargetPlan(t); // optional: also rebuild prepared selector/requirement plan
 ```
 
 ### `NodeRef` and `OpResult`
@@ -83,6 +80,13 @@ t.cacheTtlMs = 0;
   - `text` for `ReadTextEx`
 
 In practice: use `*Ex` while developing/debugging and switch to the simple variants once stable.
+
+`NodeRef` also exposes small convenience helpers so callers do not need to pattern-match the backend by hand for simple cases:
+
+- `IsControlTree()`
+- `IsManiaLink()`
+- `HasSelector()`
+- `IsNull()`
 
 ### Requirements (`Requires`)
 
@@ -99,6 +103,7 @@ In practice: use `*Ex` while developing/debugging and switch to the simple varia
 
 `UiNav::ManiaLinkReq` identifies a `CGameUILayer`:
 
+- `source` (default `CurrentApp`): choose the ML source explicitly (`CurrentApp`, `Playground`, `Menu`, `Editor`)
 - `mustBeVisible` (default `true`): require `layer.IsVisible`
 - `mustHaveLocalPage` (default `true`): require `layer.LocalPage != null` and `LocalPage.MainFrame != null` for "active"
 - `pageNeedle`: substring that must exist in `layer.ManialinkPage` or `ManialinkPageUtf8`
@@ -109,9 +114,9 @@ In practice: use `*Ex` while developing/debugging and switch to the simple varia
 
 `UiNav::ManiaLinkSpec` selects a node inside the chosen layer:
 
-- `req`: `ManiaLinkReq@` (`layer` remains supported as a legacy alias)
+- `req`: `ManiaLinkReq@`
 - `selector`: ML selector string (see syntax below)
-- `requireVisible` (default `true`): require `n.Visible`
+- `requireVisible` (default `true`): require effective visibility
 - `clickChildFallback` (default `true`): if the resolved node isn't directly clickable, try clickable immediate children
 - `alts`: alternate selectors (use `AddAlt`)
 
@@ -119,25 +124,55 @@ In practice: use `*Ex` while developing/debugging and switch to the simple varia
 
 `UiNav::ControlTreeReq` defines how to discover candidate roots:
 
-- `overlay` (default: `16` in spec; optional in `req`)
-- `anyRoot`: scan multiple roots (`scene.Mobils`) instead of only `Mobils[0]`
+- `overlay` (default `16`)
+- `rootIx` (default `0`): root to use when `anyRoot == false`
+- `anyRoot`: scan multiple roots (`scene.Mobils`) instead of only `rootIx`
 - `maxRoots`: limit any-root scan (default 24)
-- `smart`: do deeper candidate exploration when wildcards are present
-- `hintsOnly`: reject wildcard steps without hints
+- `searchMode`: `Exact`, `Smart`, or `HintsOnly`
 - `guardStartsWith`: prioritize subtrees whose label text starts with this prefix
-- `overlay` / `anyRoot` / `maxRoots` defaults are intentionally mirrored into `ControlTreeSpec` for convenience.
 
 ### `ControlTreeSpec` (node selection)
 
 `UiNav::ControlTreeSpec` defines how to select a control inside the chosen root:
 
-- `selector`: selector/path syntax (see below); `path` remains supported as a legacy alias
-- `idName`: match by `CControlBase.IdName` (recursive fallback when the selector is unstable)
+- `req`: `ControlTreeReq@`
+- `selector`: selector syntax (see below)
 - `requireVisible`: require resolved control is visible
 - `clickChildFallback`: same fallback behavior as ML selectors
 - `alts`: alternate specs when the primary path is brittle
 
-`ControlTreeSpec` can either set root search fields directly (`overlay`, `anyRoot`, ...) or reference a `ControlTreeReq@` via `spec.req`.
+Root and search behavior live in `ControlTreeReq`; `ControlTreeSpec` is only `req + selector + action flags`.
+
+## Authoring And Owned Layers
+
+UiNav now exposes a public authoring surface for clone/edit/remount workflows:
+
+- `UiNav::Builder::ImportXml(...)`
+- `UiNav::Builder::CloneLiveLayer(req, stripFrameClipping, centerRoots)`
+- `UiNav::Builder::NewDocument()`, `CloneDocument(...)`, `NewNode(...)`
+- `UiNav::Builder::AppendRoot(...)`, `AppendChild(...)`, `DeleteNode(...)`, `MoveNode(...)`
+- `UiNav::Builder::FindFirstById(...)`, `ResolveSelector(...)`
+- `UiNav::Builder::ExportXml(doc)`
+- `UiNav::Builder::MountOwned(key, doc, source, visible)`
+- `UiNav::Layers::EnsureOwned(...)`, `GetOwned(...)`, `DestroyOwned(...)`, `DestroyAllOwned()`
+
+Example: clone a menu layer, add a label, and mount the edited copy:
+
+```angelscript
+UiNav::ManiaLinkReq@ req = UiNav::ManiaLinkReq();
+req.source = UiNav::ManiaLinkSource::Menu;
+req.pageNeedle = "PauseMenu";
+
+auto doc = UiNav::Builder::CloneLiveLayer(req, true, false);
+int parentIx = UiNav::Builder::ResolveSelector(doc, "#MainFrame");
+
+auto node = UiNav::Builder::NewNode("label");
+node.controlId = "MyInjectedLabel";
+node.typed.text = "Preview";
+
+UiNav::Builder::AppendChild(doc, parentIx, node);
+UiNav::Builder::MountOwned("MyPreview", doc, UiNav::ManiaLinkSource::Menu, true);
+```
 
 ## Typical Usage Pattern (Public API)
 
@@ -147,11 +182,14 @@ Workflow:
 2. `PrepareTarget(target)` (recommended if you'll reuse it).
 3. `WaitForTarget(target)` or `IsReadyEx(target)` before acting.
 4. Act: `Click`, `ReadText`, `SetText`.
+5. If both `ml` and `controlTree` are configured, set `Target.pref` explicitly.
 
 Example: read text from a label in a specific ML layer:
 
 ```angelscript
-UiNav::ManiaLinkReq@ req = UiNav::ManiaLinkReq("PauseMenu", "SomeUniqueNeedleInThePage");
+UiNav::ManiaLinkReq@ req = UiNav::ManiaLinkReq();
+req.source = UiNav::ManiaLinkSource::Menu;
+req.pageNeedle = "SomeUniqueNeedleInThePage";
 
 UiNav::ManiaLinkSpec@ ml = UiNav::ManiaLinkSpec();
 @ml.req = req;
@@ -174,12 +212,14 @@ Example: click a ControlTree node with mixed selector syntax:
 ```angelscript
 UiNav::ControlTreeReq@ req = UiNav::ControlTreeReq();
 req.overlay = 16;
+req.rootIx = 0;
 req.anyRoot = true;
 req.maxRoots = 24;
+req.searchMode = UiNav::ControlTreeSearchMode::Smart;
 
 UiNav::ControlTreeSpec@ ct = UiNav::ControlTreeSpec();
 @ct.req = req;
-ct.selector = "overlay[16]/root[0]/#InterfaceRoot/#FrameSystem/#FrameSound/#ButtonMusicVolume";
+ct.selector = "#InterfaceRoot/#FrameSystem/**#ButtonMusicVolume";
 ct.requireVisible = true;
 
 UiNav::Target@ t = UiNav::Target();
@@ -197,7 +237,9 @@ if (UiNav::WaitForTarget(t, 2000, 33)) {
 Both `ManiaLinkSpec` and `ControlTreeSpec` support alternates:
 
 ```angelscript
-UiNav::ManiaLinkReq@ req = UiNav::ManiaLinkReq("PauseMenu", "SomeUniqueNeedleInThePage");
+UiNav::ManiaLinkReq@ req = UiNav::ManiaLinkReq();
+req.source = UiNav::ManiaLinkSource::Menu;
+req.pageNeedle = "SomeUniqueNeedleInThePage";
 
 UiNav::ManiaLinkSpec@ ml = UiNav::ManiaLinkSpec();
 @ml.req = req;
@@ -216,7 +258,7 @@ Each segment can select a direct child, or (with `**`) a descendant.
 
 Segment forms:
 
-- `#id` or `id`: match `ControlId`
+- `#id`: match `ControlId`
 - `.class`: match by `ControlClasses` entry
 - `N`: numeric index (0-based) in the children list
 - `*` or empty: wildcard match
@@ -240,60 +282,42 @@ Practical tips:
 
 ## Selector Syntax (ControlTree)
 
-ControlTree selectors live in `ControlTreeSpec.selector` (`path` is still accepted as a legacy alias).
-UiNav supports two styles, and will auto-pick the correct resolver:
+ControlTree selectors live in `ControlTreeSpec.selector`.
+They are always relative to the root chosen by `ControlTreeReq`.
 
-### 1) Pure index paths (fast)
+Segment forms:
 
-Use `/`-separated indices (0-based). Wildcards are allowed.
-
-- `1/0/3` selects child 1, then 0, then 3.
-- `*` selects "some child". By default it picks the first child unless you provide hints.
-
-Wildcard hints (choose a specific child index at that wildcard step):
-
-- `*<4>`
-- `*<4,7>` or `*<4|7>`
-- `*[4,7]` or `*{4,7}`
+- `#IdName`: match `CControlBase.IdName`
+- `N`: numeric index (0-based) in the children list
+- `*`: wildcard
+- `*<4>`, `*<4,7>`, `*<4|7>`, `*[4,7]`, `*{4,7}`: wildcard with child index hints
+- `**` prefix: search descendants instead of direct children
+- `:n` suffix: pick nth match at that step (0-based)
 
 Examples:
 
 ```text
-0/1/5
+#InterfaceRoot/#FrameSystem/2/*<0>/#ButtonMusicVolume
+**#ButtonMusicVolume
 0/*<2>/3
-0/*<2|5>/3
 ```
 
-### 2) Mixed paths (id + index + overlay/root hints)
+Removed syntax:
 
-Mixed paths use `/` separators and allow:
+- `overlay[...]`
+- `root[...]`
+- `id:SomeIdName`
+- bare `SomeIdName`
 
-- `overlay[16]` and `root[0]` tokens (usually at the front)
-- integer indices
-- wildcards (`*` with optional hints)
-- IdName tokens:
-  - `id:SomeIdName`
-  - `#SomeIdName`
-  - `SomeIdName` (bare token)
-
-IdName tokens match a direct child by `CControlBase.IdName` (and a token can also match the current node).
-
-Examples:
-
-```text
-overlay[16]/root[0]/#InterfaceRoot/#FrameSystem/2/*<0>/#ButtonMusicVolume
-root[3]/id:InterfaceRoot/0/*<2>/FrameSound
-```
-
-### Search modes (`ControlTreeReq` flags)
+### Search modes (`ControlTreeReq.searchMode`)
 
 - `anyRoot=true`: scan multiple roots instead of only `Mobils[0]`.
 - `maxRoots`: limits `anyRoot` scanning.
-- `smart=true`: when wildcards exist, tries more candidates at wildcard steps.
-- `guardStartsWith`: used with `smart` to prioritize subtrees containing label text with a given prefix.
-- `hintsOnly=true`: wildcard steps require hints (fail fast if a wildcard has no hints).
+- `searchMode=Smart`: when wildcards exist, tries more candidates at wildcard steps.
+- `guardStartsWith`: used with `searchMode=Smart` to prioritize subtrees containing label text with a given prefix.
+- `searchMode=HintsOnly`: wildcard steps require hints (fail fast if a wildcard has no hints).
 
-If selectors are too unstable, prefer `ControlTreeSpec.idName` (recursive IdName search) for a first pass, then refine to a selector once you can.
+If selectors are too unstable, prefer `**#SomeIdName` over a brittle direct path.
 
 ## ML Style Packs (Exported)
 
@@ -316,7 +340,8 @@ Example:
 
 ```angelscript
 // Capture style from a node and apply it later somewhere else.
-UiNav::ManiaLinkReq@ layerReq = UiNav::ManiaLinkReq("SomeLayer", "needle");
+UiNav::ManiaLinkReq@ layerReq = UiNav::ManiaLinkReq();
+layerReq.pageNeedle = "needle";
 auto layer = UiNav::Layers::FindLayer(layerReq);
 auto root = UiNav::ML::GetRootFrame(layer);
 
@@ -523,7 +548,7 @@ Request shape (fields can be top-level or inside `data`):
 
 Common causes: page rebuilds, stale pointers, or a plan cached against old UI.
 
-- Disable caching (`cacheNativePointers=false`, `cacheTtlMs=0`)
+- Call `t.InvalidateCache()` when you know the resolved native refs are stale
 - Call `UiNav::InvalidateTargetPlan(t)` if you mutate a target or after major UI transitions
 - Prefer `*Ex` calls while stabilizing selectors
 
@@ -536,7 +561,7 @@ Almost always stale native handles:
 
 ```angelscript
 UiNav::NodeRef@ r = UiNav::Resolve(t);
-if (r !is null && r.kind == UiNav::BackendKind::ML && UiNav::ValidateML(r)) {
+if (r !is null && r.kind == UiNav::BackendKind::ML && UiNav::ML::ValidateRef(r)) {
     // Use r.ml briefly here.
 }
 ```

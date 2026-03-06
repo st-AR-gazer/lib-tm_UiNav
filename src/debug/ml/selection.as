@@ -245,7 +245,7 @@ namespace Debug {
         @built.sel = sel;
         @built.layer = _GetMlLayerByIx(g_SelectedMlAppKind, g_SelectedMlLayerIx);
 
-        built.id = sel.ControlId;
+        built.id = UiNav::ML::ControlId(sel);
         built.text = UiNav::CleanUiFormatting(UiNav::ML::ReadText(sel));
         if (built.text.Length > 200) built.text = built.text.SubStr(0, 200) + "...";
         built.idSel = (built.id.Length > 0) ? ("#" + built.id) : "";
@@ -255,7 +255,7 @@ namespace Debug {
         built.classSel = _MlFirstClassSelector(sel, built.classList);
         built.fullSel = _BuildMlFullSelectorPath(built.layer, built.rootId, built.idChain, built.mixedChain);
 
-        @built.controlTree = sel.Control;
+        @built.controlTree = UiNav::ML::_TryGetControl(sel);
         string ctLookupKey = g_SelectedMlAppKind + "|" + g_SelectedMlLayerIx + "|" + g_SelectedMlPath + "|" + g_SelectedMlUiPath;
         if (ctLookupKey != g_MlControlTreePathLookupKey) _MlResetControlTreePathLookup(ctLookupKey);
         if (built.sel !is null && g_MlControlTreePathCached.Length == 0 && g_MlControlTreePathStatus.Length == 0) {

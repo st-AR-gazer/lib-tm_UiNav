@@ -61,26 +61,35 @@ namespace Debug {
         return layer.LocalPage.MainFrame;
     }
 
+    string _MlSourceEnumExpr(int appKind) {
+        if (appKind == 1) return "UiNav::ManiaLinkSource::Menu";
+        if (appKind == 2) return "UiNav::ManiaLinkSource::Editor";
+        return "UiNav::ManiaLinkSource::Playground";
+    }
+
     string _BuildMlTargetSnippet(const string &in rootId, const string &in idChain, const string &in mixedChain, int layerIx, const string &in layerName) {
         string selector = _PickMlExportSelector(idChain, mixedChain);
+        string safeLayerName = _EscapeCodeString(layerName);
+        string safeRootId = _EscapeCodeString(rootId);
+        string safeSelector = _EscapeCodeString(selector);
 
         string code = "";
         code += "UiNav::ManiaLinkReq@ req = UiNav::ManiaLinkReq();\n";
-        code += "req.name = \"MyLayer\";\n";
+        code += "req.source = " + _MlSourceEnumExpr(g_SelectedMlAppKind) + ";\n";
         if (layerIx >= 0) {
             code += "req.layerIxHint = " + layerIx + ";\n";
         }
         if (layerName.Length > 0) {
-            code += "req.pageNeedle = \"" + layerName + "\";\n";
+            code += "req.pageNeedle = \"" + safeLayerName + "\";\n";
         }
         if (rootId.Length > 0) {
-            code += "req.rootControlId = \"" + rootId + "\";\n";
+            code += "req.rootControlId = \"" + safeRootId + "\";\n";
         }
         code += "req.mustHaveLocalPage = true;\n";
         code += "\n";
         code += "UiNav::ManiaLinkSpec@ ml = UiNav::ManiaLinkSpec();\n";
         code += "@ml.req = req;\n";
-        code += "ml.selector = \"" + selector + "\";\n";
+        code += "ml.selector = \"" + safeSelector + "\";\n";
         if (idChain.Length > 0 && mixedChain.Length > 0 && mixedChain != idChain) {
             code += "// id-only: \"" + idChain + "\"\n";
         }
@@ -445,7 +454,6 @@ namespace Debug {
         array<string> tokens;
         string rootIdName = root.IdName.Trim();
         if (rootIdName.Length > 0) tokens.InsertLast("#" + rootIdName);
-        else tokens.InsertLast("root[" + g_SelectedControlTreeRootIx + "]");
 
         CControlBase@ cur = cast<CControlBase@>(root);
         string relPath = g_SelectedControlTreePath.Trim();
@@ -488,17 +496,14 @@ namespace Debug {
         if (targetPath.Length == 0) targetPath = g_SelectedControlTreePath;
 
         string safePath = _EscapeCodeString(targetPath);
-        string safeId = _EscapeCodeString(selIdName);
         string code = "";
         code += "UiNav::ControlTreeReq@ req = UiNav::ControlTreeReq();\n";
         code += "req.overlay = " + g_SelectedControlTreeOverlayAtSel + ";\n";
+        if (g_SelectedControlTreeRootIx >= 0) code += "req.rootIx = " + g_SelectedControlTreeRootIx + ";\n";
         code += "\n";
         code += "UiNav::ControlTreeSpec@ controlTree = UiNav::ControlTreeSpec();\n";
         code += "@controlTree.req = req;\n";
         code += "controlTree.selector = \"" + safePath + "\";\n";
-        if (safeId.Length > 0) {
-            code += "controlTree.idName = \"" + safeId + "\";\n";
-        }
         code += "controlTree.requireVisible = true;\n";
         code += "\n";
         code += "UiNav::Target@ t = UiNav::Target();\n";

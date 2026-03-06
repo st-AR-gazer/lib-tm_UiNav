@@ -32,6 +32,7 @@ namespace Layers {
     uint g_LayerReqCacheLastSaveMs = 0;
 
     class LayerReqFrameMemoEntry {
+        ManiaLinkSource source = ManiaLinkSource::CurrentApp;
         CGameManiaApp@ app = null;
         int layerIx = -1;
     }
@@ -49,7 +50,8 @@ namespace Layers {
 
     string _LayerReqKey(const ManiaLinkReq@ req) {
         if (req is null) return "";
-        string k = (req.mustBeVisible ? "v1" : "v0");
+        string k = "s=" + tostring(int(req.source));
+        k += (req.mustBeVisible ? "|v1" : "|v0");
         k += (req.mustHaveLocalPage ? "|p1" : "|p0");
         if (req.pageNeedle.Length > 0) k += "|n=" + req.pageNeedle;
         if (req.rootControlId.Length > 0) k += "|id=" + req.rootControlId;
@@ -75,18 +77,20 @@ namespace Layers {
         _ClearLayerReqFrameMemo();
     }
 
-    bool _TryLayerReqFrameMemo(const string &in key, CGameManiaApp@ app, const ManiaLinkReq@ req, CGameUILayer@ &out layer, int &out layerIx) {
+    bool _TryLayerReqFrameMemo(const string &in key, ManiaLinkSource source, CGameManiaApp@ app, const ManiaLinkReq@ req, CGameUILayer@ &out layer, int &out layerIx) {
         layerIx = -1;
         @layer = null;
         if (!S_LayerReqFrameMemoEnabled) return false;
-        if (key.Length == 0 || app is null || req is null) return false;
+        if (key.Length == 0 || req is null) return false;
 
         _RotateLayerReqFrameMemoIfNeeded(Time::Now);
 
-        auto layers = app.UILayers;
-
         LayerReqFrameMemoEntry@ e;
         if (!g_LayerReqFrameMemo.Get(key, @e) || e is null) {
+            g_LayerReqFrameMemoMisses++;
+            return false;
+        }
+        if (e.source != source) {
             g_LayerReqFrameMemoMisses++;
             return false;
         }
@@ -98,12 +102,13 @@ namespace Layers {
             g_LayerReqFrameMemoNegativeHits++;
             return true;
         }
-        if (e.layerIx < 0 || e.layerIx >= int(layers.Length)) {
+        uint layersLen = _LayerCountForSource(source, app);
+        if (e.layerIx < 0 || e.layerIx >= int(layersLen)) {
             g_LayerReqFrameMemoMisses++;
             return false;
         }
 
-        auto cand = layers[uint(e.layerIx)];
+        auto cand = _LayerAtSource(source, app, uint(e.layerIx));
         if (cand is null) {
             g_LayerReqFrameMemoMisses++;
             return false;
@@ -119,9 +124,9 @@ namespace Layers {
         return true;
     }
 
-    void _SetLayerReqFrameMemo(const string &in key, CGameManiaApp@ app, int layerIx) {
+    void _SetLayerReqFrameMemo(const string &in key, ManiaLinkSource source, CGameManiaApp@ app, int layerIx) {
         if (!S_LayerReqFrameMemoEnabled) return;
-        if (key.Length == 0 || app is null) return;
+        if (key.Length == 0) return;
 
         _RotateLayerReqFrameMemoIfNeeded(Time::Now);
 
@@ -137,6 +142,7 @@ namespace Layers {
             }
         }
 
+        e.source = source;
         @e.app = app;
         e.layerIx = layerIx;
         g_LayerReqFrameMemo.Set(key, @e);
@@ -265,6 +271,12 @@ namespace Layers {
         return null;
     }
 
+    CGameManiaApp@ GetManiaApp(ManiaLinkSource source) {
+        if (source == ManiaLinkSource::Menu) return GetManiaAppMenu();
+        if (source == ManiaLinkSource::Playground) return GetManiaAppPlayground();
+        return GetManiaApp();
+    }
+
     CGameManiaApp@ GetManiaAppPlayground() {
         auto tm = GetTmApp();
         if (tm !is null && tm.Network !is null && tm.Network.ClientManiaAppPlayground !is null) {
@@ -288,6 +300,77 @@ namespace Layers {
 
     CTrackMania@ GetTmApp() {
         return cast<CTrackMania>(GetApp());
+    }
+
+    CGameCtnEditorCommon@ _GetEditorCommon() {
+        auto tm = GetTmApp();
+        if (tm is null || tm.Editor is null) return null;
+        return cast<CGameCtnEditorCommon>(tm.Editor);
+    }
+
+    bool _ResolveLayerSource(ManiaLinkSource requested, ManiaLinkSource &out resolved, CGameManiaApp@ &out app) {
+        resolved = requested;
+        @app = null;
+
+        if (requested == ManiaLinkSource::Menu) {
+            @app = GetManiaAppMenu();
+            return app !is null;
+        }
+
+        if (requested == ManiaLinkSource::Playground) {
+            @app = GetManiaAppPlayground();
+            return app !is null;
+        }
+
+        if (requested == ManiaLinkSource::Editor) {
+            auto editor = _GetEditorCommon();
+            return editor !is null && editor.PluginMapType !is null;
+        }
+
+        @app = GetManiaApp();
+        if (app !is null) {
+            auto menu = GetManiaAppMenu();
+            if (menu !is null && app is menu) resolved = ManiaLinkSource::Menu;
+            else {
+                auto pg = GetManiaAppPlayground();
+                if (pg !is null && app is pg) resolved = ManiaLinkSource::Playground;
+            }
+            return true;
+        }
+
+        auto editor = _GetEditorCommon();
+        if (editor !is null && editor.PluginMapType !is null) {
+            resolved = ManiaLinkSource::Editor;
+            return true;
+        }
+
+        return false;
+    }
+
+    uint _LayerCountForSource(ManiaLinkSource source, CGameManiaApp@ app) {
+        if (source == ManiaLinkSource::Editor) {
+            auto editor = _GetEditorCommon();
+            if (editor is null || editor.PluginMapType is null) return 0;
+            return editor.PluginMapType.UILayers.Length;
+        }
+
+        if (app is null) return 0;
+        return app.UILayers.Length;
+    }
+
+    CGameUILayer@ _LayerAtSource(ManiaLinkSource source, CGameManiaApp@ app, uint ix) {
+        if (source == ManiaLinkSource::Editor) {
+            auto editor = _GetEditorCommon();
+            if (editor is null || editor.PluginMapType is null) return null;
+            auto layers = editor.PluginMapType.UILayers;
+            if (ix >= layers.Length) return null;
+            return layers[ix];
+        }
+
+        if (app is null) return null;
+        auto layers = app.UILayers;
+        if (ix >= layers.Length) return null;
+        return layers[ix];
     }
 
     CGamePlayground@ GetPlayground() {
@@ -325,11 +408,12 @@ namespace Layers {
         layerIx = -1;
         if (req is null) return null;
 
-        auto app = GetManiaApp();
-        if (app is null) return null;
+        ManiaLinkSource source = req.source;
+        CGameManiaApp@ app = null;
+        if (!_ResolveLayerSource(req.source, source, app)) return null;
 
-        auto layers = app.UILayers;
-        if (layers.Length == 0) return null;
+        uint layersLen = _LayerCountForSource(source, app);
+        if (layersLen == 0) return null;
 
         _EnsureLayerReqCacheLoaded();
 
@@ -346,7 +430,7 @@ namespace Layers {
         if (frameMemoKey.Length > 0) {
             CGameUILayer@ memoLayer = null;
             int memoIx = -1;
-            if (_TryLayerReqFrameMemo(frameMemoKey, app, req, memoLayer, memoIx)) {
+            if (_TryLayerReqFrameMemo(frameMemoKey, source, app, req, memoLayer, memoIx)) {
                 layerIx = memoIx;
                 return memoLayer;
             }
@@ -360,8 +444,8 @@ namespace Layers {
             auto e = _GetLayerReqCache(cacheKey, false);
             if (e !is null) {
                 int ix = e.lastIx;
-                if (ix >= 0 && ix < int(layers.Length)) {
-                    auto cand = layers[uint(ix)];
+                if (ix >= 0 && ix < int(layersLen)) {
+                    auto cand = _LayerAtSource(source, app, uint(ix));
                     bool basicOk = true;
                     if (req.mustBeVisible && !_LayerIsVisibleBestEffort(cand)) basicOk = false;
                     if (basicOk && req.mustHaveLocalPage && !_LayerHasLocalPageBestEffort(cand)) basicOk = false;
@@ -372,7 +456,7 @@ namespace Layers {
                             e.lastOkMs = Time::Now;
                             dynCacheHit = true;
                             g_LayerReqCacheHits++;
-                            _SetLayerReqFrameMemo(frameMemoKey, app, layerIx);
+                            _SetLayerReqFrameMemo(frameMemoKey, source, app, layerIx);
                             return cand;
                         }
                     }
@@ -384,7 +468,7 @@ namespace Layers {
                         e.lastOkMs = Time::Now;
                         dynCacheHit = true;
                         g_LayerReqCacheHits++;
-                        _SetLayerReqFrameMemo(frameMemoKey, app, layerIx);
+                        _SetLayerReqFrameMemo(frameMemoKey, source, app, layerIx);
                         return cand;
                     }
                 }
@@ -397,8 +481,8 @@ namespace Layers {
 
         if (req.layerIxHint >= 0) {
             uint ix = uint(req.layerIxHint);
-            if (ix < layers.Length) {
-                auto cand = layers[ix];
+            if (ix < layersLen) {
+                auto cand = _LayerAtSource(source, app, ix);
                 if (_Matches(req, cand)) {
                     layerIx = int(ix);
                     if (cacheKey.Length > 0) {
@@ -414,14 +498,14 @@ namespace Layers {
                         if (e !is null) e.lastOkMs = Time::Now;
                     }
                     _MaybeSaveLayerReqCache();
-                    _SetLayerReqFrameMemo(frameMemoKey, app, layerIx);
+                    _SetLayerReqFrameMemo(frameMemoKey, source, app, layerIx);
                     return cand;
                 }
             }
         }
 
-        for (uint i = 0; i < layers.Length; ++i) {
-            auto layer = layers[i];
+        for (uint i = 0; i < layersLen; ++i) {
+            auto layer = _LayerAtSource(source, app, i);
             if (!_Matches(req, layer)) continue;
 
             layerIx = int(i);
@@ -438,12 +522,12 @@ namespace Layers {
                 if (e !is null) e.lastOkMs = Time::Now;
             }
             _MaybeSaveLayerReqCache();
-            _SetLayerReqFrameMemo(frameMemoKey, app, layerIx);
+            _SetLayerReqFrameMemo(frameMemoKey, source, app, layerIx);
             return layer;
         }
 
         _MaybeSaveLayerReqCache();
-        _SetLayerReqFrameMemo(frameMemoKey, app, kLayerReqFrameMemoMiss);
+        _SetLayerReqFrameMemo(frameMemoKey, source, app, kLayerReqFrameMemoMiss);
         return null;
     }
 
@@ -483,6 +567,7 @@ namespace Layers {
     class OwnedLayer {
         string key;
         CGameUILayer@ layer;
+        ManiaLinkSource source = ManiaLinkSource::CurrentApp;
         string lastPage;
         bool visibleWanted = true;
         uint lastEnsureMs = 0;
@@ -519,6 +604,32 @@ namespace Layers {
         @app = GetManiaAppMenu();
         if (app !is null) return app;
         return GetManiaAppPlayground();
+    }
+
+    bool _LayerBelongsToEditor(CGameUILayer@ layer) {
+        if (layer is null) return false;
+        auto editor = _GetEditorCommon();
+        if (editor is null || editor.PluginMapType is null) return false;
+        auto layers = editor.PluginMapType.UILayers;
+        for (uint i = 0; i < layers.Length; ++i) {
+            if (layers[i] is layer) return true;
+        }
+        return false;
+    }
+
+    bool _LayerBelongsToSource(ManiaLinkSource source, CGameManiaApp@ app, CGameUILayer@ layer) {
+        if (source == ManiaLinkSource::Editor) return _LayerBelongsToEditor(layer);
+        return _LayerBelongsToApp(app, layer);
+    }
+
+    CGameUILayer@ _CreateOwnedLayerAtSource(ManiaLinkSource source, CGameManiaApp@ app) {
+        if (source == ManiaLinkSource::Editor) {
+            auto editor = _GetEditorCommon();
+            if (editor is null || editor.PluginMapType is null || editor.PluginMapType.UIManager is null) return null;
+            return editor.PluginMapType.UIManager.UILayerCreate();
+        }
+        if (app is null) return null;
+        return app.UILayerCreate();
     }
 
     bool _LayerBelongsToApp(CGameManiaApp@ app, CGameUILayer@ layer) {
@@ -630,8 +741,40 @@ namespace Layers {
         return removed;
     }
 
+    int _DestroyUiNavPrefixedLayersInEditor() {
+        auto editor = _GetEditorCommon();
+        if (editor is null || editor.PluginMapType is null || editor.PluginMapType.UIManager is null) return 0;
+
+        array<CGameUILayer@> victims;
+        auto layers = editor.PluginMapType.UILayers;
+        for (uint i = 0; i < layers.Length; ++i) {
+            auto layer = layers[i];
+            if (layer is null) continue;
+            if (_LayerLooksUiNavOwnedByPrefix(layer)) victims.InsertLast(layer);
+        }
+
+        int removed = 0;
+        for (uint i = 0; i < victims.Length; ++i) {
+            auto layer = victims[i];
+            if (layer is null || !_LayerBelongsToEditor(layer)) continue;
+            try {
+                editor.PluginMapType.UIManager.UILayerDestroy(layer);
+                removed++;
+            } catch {
+                continue;
+            }
+        }
+        return removed;
+    }
+
     bool _DestroyOwnedLayerHandle(CGameUILayer@ layer) {
         if (layer is null) return false;
+
+        auto editor = _GetEditorCommon();
+        if (editor !is null && editor.PluginMapType !is null && editor.PluginMapType.UIManager !is null && _LayerBelongsToEditor(layer)) {
+            editor.PluginMapType.UIManager.UILayerDestroy(layer);
+            return true;
+        }
 
         auto app = _ResolveOwnedLayerApp();
         if (app !is null && _LayerBelongsToApp(app, layer)) {
@@ -654,8 +797,8 @@ namespace Layers {
         return false;
     }
 
-    CGameUILayer@ _EnsureAtApp(const string &in key, const string &in page, CGameManiaApp@ app, bool visible) {
-        if (app is null) return null;
+    CGameUILayer@ _EnsureAtResolvedSource(const string &in key, const string &in page, ManiaLinkSource source, CGameManiaApp@ app, bool visible) {
+        if (source != ManiaLinkSource::Editor && app is null) return null;
 
         OwnedLayer@ ol = _GetOwned(key);
 
@@ -665,17 +808,19 @@ namespace Layers {
             _SetOwned(key, ol);
         }
 
-        if (ol.layer !is null && !_LayerBelongsToApp(app, ol.layer)) {
+        if (ol.layer !is null && !_LayerBelongsToSource(source, app, ol.layer)) {
             _DestroyOwnedLayerHandle(ol.layer);
             @ol.layer = null;
             ol.lastPage = "";
         }
 
         if (ol.layer is null) {
-            @ol.layer = app.UILayerCreate();
+            @ol.layer = _CreateOwnedLayerAtSource(source, app);
+            if (ol.layer is null) return null;
             ol.lastPage = "";
         }
 
+        ol.source = source;
         ol.visibleWanted = visible;
 
         if (ol.layer !is null) {
@@ -691,6 +836,10 @@ namespace Layers {
         return ol.layer;
     }
 
+    CGameUILayer@ _EnsureAtApp(const string &in key, const string &in page, CGameManiaApp@ app, bool visible) {
+        return _EnsureAtResolvedSource(key, page, ManiaLinkSource::CurrentApp, app, visible);
+    }
+
     CGameUILayer@ EnsureAtApp(const string &in key, const string &in page, CGameManiaApp@ app, bool visible = true) {
         return _EnsureAtApp(key, page, app, visible);
     }
@@ -698,6 +847,13 @@ namespace Layers {
     CGameUILayer@ Ensure(const string &in key, const string &in page, bool visible = true) {
         auto app = _ResolveOwnedLayerApp();
         return _EnsureAtApp(key, page, app, visible);
+    }
+
+    CGameUILayer@ EnsureOwned(const string &in key, const string &in page, ManiaLinkSource source = ManiaLinkSource::CurrentApp, bool visible = true) {
+        ManiaLinkSource resolved = source;
+        CGameManiaApp@ app = null;
+        if (!_ResolveLayerSource(source, resolved, app)) return null;
+        return _EnsureAtResolvedSource(key, page, resolved, app, visible);
     }
 
     bool Destroy(const string &in key) {
@@ -713,6 +869,10 @@ namespace Layers {
 
         g_Owned.Delete(key);
         return !hadLayer || removedLayer;
+    }
+
+    bool DestroyOwned(const string &in key) {
+        return Destroy(key);
     }
 
     void DestroyAllOwned() {
@@ -733,6 +893,7 @@ namespace Layers {
         for (uint i = 0; i < apps.Length; ++i) {
             removed += _DestroyUiNavPrefixedLayersInApp(apps[i]);
         }
+        removed += _DestroyUiNavPrefixedLayersInEditor();
         if (removed < 0) removed = 0;
         g_LastDestroyAllOwnedSweepCount = uint(removed);
     }

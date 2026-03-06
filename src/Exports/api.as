@@ -5,7 +5,7 @@
 // implemented by the UiNav plugin module ("UiNav").
 //
 // Public rule: dependent plugins should only rely on items declared here + shared types
-// from `src/core/types.as`.
+// from `src/core/types.as` and `src/core/builder_types.as`.
 //
 // Everything else in UiNav's source tree is considered internal and may change.
 
@@ -30,8 +30,6 @@ namespace UiNav {
     import OpResult@ ReadTextEx(Target@ t) from "UiNav";
     import void PrepareTarget(Target@ t) from "UiNav";
     import void InvalidateTargetPlan(Target@ t) from "UiNav";
-
-    import bool ValidateML(NodeRef@ r) from "UiNav";
 
     import bool IsEffectivelyVisible(CControlBase@ n) from "UiNav";
     import string CleanUiFormatting(const string &in s) from "UiNav";
@@ -70,14 +68,50 @@ namespace UiNav { namespace Layers {
     import CGameUILayer@ FindLayer(const ManiaLinkReq@ req) from "UiNav";
     import CGameUILayer@ FindLayer(const ManiaLinkReq@ req, int &out layerIx) from "UiNav";
     import bool LayerLooksActiveBestEffort(CGameUILayer@ layer) from "UiNav";
+    import CGameUILayer@ GetOwned(const string &in key) from "UiNav";
+    import CGameUILayer@ EnsureOwned(const string &in key, const string &in page,
+        ManiaLinkSource source = ManiaLinkSource::CurrentApp, bool visible = true) from "UiNav";
+    import bool DestroyOwned(const string &in key) from "UiNav";
+    import void DestroyAllOwned() from "UiNav";
+    import uint LastDestroyAllOwnedSweepCount() from "UiNav";
+} }
+
+namespace UiNav { namespace Builder {
+    import BuilderDocument@ NewDocument() from "UiNav";
+    import BuilderDocument@ CloneDocument(const BuilderDocument@ src) from "UiNav";
+    import BuilderNode@ NewNode(const string &in kind = "frame") from "UiNav";
+    import BuilderDocument@ ImportXml(const string &in xmlText, const string &in sourceKind = "import_xml",
+        const string &in sourceLabel = "") from "UiNav";
+    import BuilderDocument@ CloneLiveLayer(const ManiaLinkReq@ req, bool stripFrameClipping = true,
+        bool centerRoots = false) from "UiNav";
+    import string ExportXml(const BuilderDocument@ doc) from "UiNav";
+    import int AppendRoot(BuilderDocument@ doc, BuilderNode@ node) from "UiNav";
+    import int AppendChild(BuilderDocument@ doc, int parentIx, BuilderNode@ node) from "UiNav";
+    import bool DeleteNode(BuilderDocument@ doc, int nodeIx) from "UiNav";
+    import bool MoveNode(BuilderDocument@ doc, int nodeIx, int newParentIx) from "UiNav";
+    import int FindFirstById(const BuilderDocument@ doc, const string &in controlId) from "UiNav";
+    import int ResolveSelector(const BuilderDocument@ doc, const string &in selector, int startIx = -1) from "UiNav";
+    import int StripFrameClipping(BuilderDocument@ doc) from "UiNav";
+    import bool CenterRoots(BuilderDocument@ doc) from "UiNav";
+    import CGameUILayer@ MountOwned(const string &in key, const BuilderDocument@ doc,
+        ManiaLinkSource source = ManiaLinkSource::CurrentApp, bool visible = true) from "UiNav";
+} }
+
+namespace UiNav { namespace CT {
+    import CControlBase@ ResolveSelector(const string &in selector, CControlBase@ start,
+        ControlTreeSearchMode mode = ControlTreeSearchMode::Exact, const string &in guardStartsWith = "") from "UiNav";
+    import CControlBase@ FindFirstByIdName(CControlBase@ root, const string &in idName) from "UiNav";
+    import bool IsEffectivelyVisible(CControlBase@ n) from "UiNav";
 } }
 
 namespace UiNav { namespace ML {
     import CGameManialinkFrame@ GetRootFrame(CGameUILayer@ layer) from "UiNav";
     import CGameManialinkControl@ ResolveSelector(const string &in selector, CGameManialinkControl@ start) from "UiNav";
     import CGameManialinkControl@ FindFirstById(CGameManialinkControl@ root, const string &in id) from "UiNav";
+    import bool ValidateRef(NodeRef@ r) from "UiNav";
 
-    import bool IsVisible(CGameManialinkControl@ n) from "UiNav";
+    import bool IsVisibleSelf(CGameManialinkControl@ n) from "UiNav";
+    import bool IsEffectivelyVisible(CGameManialinkControl@ n) from "UiNav";
     import string ReadText(CGameManialinkControl@ n) from "UiNav";
     import bool SetText(CGameManialinkControl@ n, const string &in text) from "UiNav";
 

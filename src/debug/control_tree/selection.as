@@ -195,9 +195,9 @@ namespace Debug {
         built.dispPath = g_SelectedControlTreeDisplayPath;
         built.uiPath = g_SelectedControlTreeUiPath;
         built.mixedPath = _BuildControlTreeMixedPathForSelection();
-        built.indexPath = built.relPath.Length > 0 ? built.relPath : (g_SelectedControlTreeRootIx >= 0 ? ("root[" + g_SelectedControlTreeRootIx + "]") : "");
+        built.indexPath = built.relPath;
         built.selector = built.mixedPath.Length > 0 ? built.mixedPath : built.indexPath;
-        built.idQuery = built.selIdName.Length > 0 ? ("id:" + built.selIdName) : "";
+        built.idQuery = built.selIdName.Length > 0 ? ("**#" + built.selIdName) : "";
 
         @ctx = built;
         return true;
