@@ -1,6 +1,16 @@
 namespace UiNav {
 namespace Debug {
 
+    void _RenderTreeRowBudgetOverride(const string &in idSuffix) {
+        int budget = S_DebugTreeRowBudget;
+        UI::SetNextItemWidth(120.0f);
+        budget = UI::InputInt("Max rows##tree-row-budget-" + idSuffix, budget);
+        if (budget < 0) budget = 0;
+        if (budget != S_DebugTreeRowBudget) S_DebugTreeRowBudget = budget;
+        UI::SameLine();
+        UI::TextDisabled("0 = unlimited");
+    }
+
     void _SelectControlTreeLayerRoot(uint overlay, int rootIx) {
         if (rootIx < 0) return;
         CControlBase@ root = null;
@@ -55,6 +65,11 @@ namespace Debug {
         UI::SetNextItemWidth(110.0f);
         g_ControlTreeOverlay = UI::InputInt("##controlTree-overlay-index", g_ControlTreeOverlay);
         if (UI::IsItemHovered()) UI::SetTooltip("Overlay index (-1 = all overlays)");
+        UI::SameLine();
+        S_ControlTreeHideEmptyRoots = UI::Checkbox("Hide empty roots##controlTree-hide-empty", S_ControlTreeHideEmptyRoots);
+        if (UI::IsItemHovered()) {
+            UI::SetTooltip("Hide plain top-level Frame roots that have no children and no identifying text.");
+        }
         if (g_ControlTreeOverlay < -1) g_ControlTreeOverlay = -1;
         uint overlayCount = 0;
         if (_TryGetControlTreeOverlayCount(overlayCount) && overlayCount > 0
@@ -88,6 +103,75 @@ namespace Debug {
         if (vp is null) return false;
         count = vp.Overlays.Length;
         return true;
+    }
+
+    string _ControlTreeOverlayRootsCacheKey(uint overlay) {
+        return "ov=" + overlay + "|hide=" + (S_ControlTreeHideEmptyRoots ? "1" : "0");
+    }
+
+    ControlTreeOverlayRootsCacheEntry@ _GetControlTreeOverlayRootsCache(uint overlay, uint mobilsLen) {
+        string key = _ControlTreeOverlayRootsCacheKey(overlay);
+        uint epoch = UiNav::ContextEpoch();
+
+        ControlTreeOverlayRootsCacheEntry@ e;
+        bool ok = g_ControlTreeOverlayRootsCache.Get(key, @e) && e !is null;
+        if (ok && e.epoch == epoch && e.mobilsLen == mobilsLen) return e;
+
+        @e = ControlTreeOverlayRootsCacheEntry();
+        e.epoch = epoch;
+        e.mobilsLen = mobilsLen;
+        g_ControlTreeOverlayRootsCache.Set(key, @e);
+        return e;
+    }
+
+    bool _ShouldDisplayControlTreeOverlayRoot(CControlBase@ root) {
+        if (root is null) return false;
+        if (!S_ControlTreeHideEmptyRoots) return true;
+        if (_ChildrenLen(root) > 0) return true;
+        if (root.IdName.Trim().Length > 0) return true;
+        if (root.StackText.Trim().Length > 0) return true;
+        if (cast<CControlLabel>(root) !is null) return true;
+        if (cast<CControlEntry>(root) !is null) return true;
+        if (cast<CControlButton>(root) !is null) return true;
+        if (cast<CControlQuad>(root) !is null) return true;
+        if (cast<CControlGrid>(root) !is null) return true;
+        if (cast<CControlListCard>(root) !is null) return true;
+        return false;
+    }
+
+    void _AdvanceControlTreeOverlayRootsCache(CScene2d@ scene, uint overlay, uint maxMobilsToScan) {
+        if (scene is null) return;
+        uint mobilsLen = scene.Mobils.Length;
+        auto e = _GetControlTreeOverlayRootsCache(overlay, mobilsLen);
+        if (e is null || e.complete) return;
+
+        uint budget = maxMobilsToScan;
+        if (budget == 0) budget = mobilsLen;
+
+        uint scanned = 0;
+        while (e.scanIx < mobilsLen && scanned < budget) {
+            auto root = _RootFromMobil(scene, e.scanIx);
+            if (_ShouldDisplayControlTreeOverlayRoot(root)) {
+                e.rootIxs.InsertLast(int(e.scanIx));
+            }
+            e.scanIx++;
+            scanned++;
+        }
+        if (e.scanIx >= mobilsLen) e.complete = true;
+    }
+
+    int _FindFirstDisplayableControlTreeRootIx(CScene2d@ scene, uint overlay) {
+        if (scene is null) return -1;
+        uint mobilsLen = scene.Mobils.Length;
+        auto e = _GetControlTreeOverlayRootsCache(overlay, mobilsLen);
+        if (e !is null && e.rootIxs.Length > 0) return e.rootIxs[0];
+
+        for (uint i = 0; i < mobilsLen; ++i) {
+            auto root = _RootFromMobil(scene, i);
+            if (!_ShouldDisplayControlTreeOverlayRoot(root)) continue;
+            return int(i);
+        }
+        return -1;
     }
 
     void _RenderControlTreeNode(CControlBase@ n, const string &in relPath, const string &in displayPath, const string &in uiPath,
@@ -187,23 +271,23 @@ namespace Debug {
         CScene2d@ scene;
         if (!_GetScene2d(overlay, scene) || scene is null) return;
 
-        bool hasRoots = false;
-        uint rootCount = 0;
         uint rootsLen = scene.Mobils.Length;
-        for (uint i = 0; i < rootsLen; ++i) {
-            if (_RootFromMobil(scene, i) !is null) {
-                hasRoots = true;
-                rootCount++;
-            }
-        }
-        if (!hasRoots) return;
+        if (rootsLen == 0) return;
+
+        auto rootsCache = _GetControlTreeOverlayRootsCache(overlay, rootsLen);
+        bool hasRoots = true;
+        bool rootCountExact = false;
+        uint rootCount = 0;
 
         string overlayUi = "O" + overlay;
         if (filter.Length > 0) {
+            hasRoots = false;
             bool overlayHasMatch = false;
             for (uint i = 0; i < rootsLen; ++i) {
                 auto root = _RootFromMobil(scene, i);
                 if (root is null) continue;
+                hasRoots = true;
+                rootCount++;
                 string rootPath = "root[" + i + "]";
                 string rootUi = overlayUi + "/" + rootPath;
                 string rootDisplay = "overlay[" + overlay + "]/" + rootPath;
@@ -213,6 +297,10 @@ namespace Debug {
                 }
             }
             if (!overlayHasMatch) return;
+            rootCountExact = true;
+        } else if (_IsControlTreeTreeOpen(overlayUi)) {
+            _AdvanceControlTreeOverlayRootsCache(scene, overlay, S_ControlTreeOverlayRootScanBudget);
+            if (rootsCache !is null && rootsCache.complete) hasRoots = rootsCache.rootIxs.Length > 0;
         }
 
         g_ControlTreeRowsRendered++;
@@ -225,18 +313,25 @@ namespace Debug {
 
         _DrawStackedTreeActionButtonsSpacer();
         UI::SameLine();
-        bool overlayVisibleAny = false;
-        for (uint i = 0; i < rootsLen; ++i) {
-            auto root = _RootFromMobil(scene, i);
-            if (root is null) continue;
-            bool v = IsEffectivelyVisible(root);
-            if (v) overlayVisibleAny = true;
+        bool overlayVisibleKnown = false;
+        bool overlayVisible = false;
+        if (g_SelectedControlTreeOverlayAtSel == overlay && g_SelectedControlTreeRootIx >= 0) {
+            CControlBase@ selectedRoot = null;
+            if (_ResolveControlTreeNodeByPath(overlay, g_SelectedControlTreeRootIx, "", selectedRoot) && selectedRoot !is null) {
+                overlayVisible = IsEffectivelyVisible(selectedRoot);
+                overlayVisibleKnown = true;
+            }
         }
-        bool overlayVisible = overlayVisibleAny;
         UI::BeginDisabled();
         UI::Checkbox("##controlTree-overlay-vis-" + overlayUi, overlayVisible);
         UI::EndDisabled();
-        if (UI::IsItemHovered()) UI::SetTooltip("Overlay visibility indicator (read-only). Toggle roots/nodes directly.");
+        if (UI::IsItemHovered()) {
+            if (overlayVisibleKnown) {
+                UI::SetTooltip("Overlay visibility indicator (selected root only). Toggle roots/nodes directly.");
+            } else {
+                UI::SetTooltip("Overlay-wide visibility aggregation is skipped for performance. Select a root/node to inspect visibility.");
+            }
+        }
         UI::SameLine();
 
         bool open = _IsControlTreeTreeOpen(overlayUi);
@@ -245,8 +340,10 @@ namespace Debug {
         }
         UI::SameLine();
 
+        string overlayMeta = "mobils: " + rootsLen;
+        if (rootCountExact) overlayMeta += ", roots: " + rootCount;
         string overlayLabel = _LayerTextColorCode(overlay)
-            + "Overlay[" + overlay + "] \\$999(mobils: " + rootsLen + ", roots: " + rootCount + ")\\$z";
+            + "Overlay[" + overlay + "] \\$999(" + overlayMeta + ")\\$z";
         bool viewed = (g_ControlTreeOverlay >= 0 && g_ControlTreeOverlay == int(overlay));
         UI::Selectable(overlayLabel + "##controlTree-overlay-label-" + overlayUi, false);
         _DrawLayerRowHighlight(false, viewed);
@@ -258,12 +355,8 @@ namespace Debug {
             _SetControlTreeTreeOpen(overlayUi, !open);
         }
         if (rowSelectRequested) {
-            for (uint i = 0; i < rootsLen; ++i) {
-                auto root = _RootFromMobil(scene, i);
-                if (root is null) continue;
-                _SelectControlTreeLayerRoot(overlay, int(i));
-                break;
-            }
+            int firstRootIx = _FindFirstDisplayableControlTreeRootIx(scene, overlay);
+            if (firstRootIx >= 0) _SelectControlTreeLayerRoot(overlay, firstRootIx);
         }
 
         string overlayPopupId = "##controlTree-overlay-popup-" + overlayUi;
@@ -271,7 +364,9 @@ namespace Debug {
             UI::OpenPopup(overlayPopupId);
         }
         if (UI::BeginPopup(overlayPopupId)) {
-            UI::Text("Overlay[" + overlay + "] | mobils: " + rootsLen + " | roots: " + rootCount);
+            string popupLabel = "Overlay[" + overlay + "] | mobils: " + rootsLen;
+            if (rootCountExact) popupLabel += " | roots: " + rootCount;
+            UI::Text(popupLabel);
             UI::Separator();
             if (UI::MenuItem("Focus this overlay")) g_ControlTreeOverlay = int(overlay);
             if (UI::MenuItem("Show all overlays")) g_ControlTreeOverlay = -1;
@@ -299,10 +394,31 @@ namespace Debug {
         UI::PopID();
 
         if (!_IsControlTreeTreeOpen(overlayUi)) return;
+        if (filter.Length == 0) {
+            _AdvanceControlTreeOverlayRootsCache(scene, overlay, S_ControlTreeOverlayRootScanBudget);
+            if (rootsCache !is null) {
+                for (uint i = 0; i < rootsCache.rootIxs.Length; ++i) {
+                    if (g_ControlTreeRowsTruncated) break;
+                    int rootIx = rootsCache.rootIxs[i];
+                    if (rootIx < 0) continue;
+                    auto root = _RootFromMobil(scene, uint(rootIx));
+                    if (root is null) continue;
+                    string rootPath = "root[" + rootIx + "]";
+                    string rootUi = overlayUi + "/" + rootPath;
+                    string rootDisplay = "overlay[" + overlay + "]/" + rootPath;
+                    _RenderControlTreeNode(root, "", rootDisplay, rootUi, 1, rootIx, overlay, filter, searchTerms);
+                }
+                if (!rootsCache.complete && !g_ControlTreeRowsTruncated) {
+                    UI::TextDisabled("Scanning overlay roots...");
+                }
+            }
+            return;
+        }
         for (uint i = 0; i < rootsLen; ++i) {
             if (g_ControlTreeRowsTruncated) break;
             auto root = _RootFromMobil(scene, i);
             if (root is null) continue;
+            if (!_ShouldDisplayControlTreeOverlayRoot(root)) continue;
             string rootPath = "root[" + i + "]";
             string rootUi = overlayUi + "/" + rootPath;
             string rootDisplay = "overlay[" + overlay + "]/" + rootPath;
@@ -357,6 +473,7 @@ namespace Debug {
             if (g_ControlTreeRowsRendered == 0) UI::Text("No matching controls.");
             else if (g_ControlTreeRowsTruncated) {
                 UI::Text("\\$f80Tree rows truncated at budget " + S_DebugTreeRowBudget + ". Refine search or open fewer branches.\\$z");
+                _RenderTreeRowBudgetOverride("controlTree-focus");
             }
             UI::Dummy(vec2(0, UI::GetFrameHeightWithSpacing()));
             return;
@@ -387,6 +504,7 @@ namespace Debug {
         if (g_ControlTreeRowsRendered == 0) UI::Text("No matching controls.");
         else if (g_ControlTreeRowsTruncated) {
             UI::Text("\\$f80Tree rows truncated at budget " + S_DebugTreeRowBudget + ". Refine search or open fewer branches.\\$z");
+            _RenderTreeRowBudgetOverride("controlTree");
         }
 
         UI::Dummy(vec2(0, UI::GetFrameHeightWithSpacing()));

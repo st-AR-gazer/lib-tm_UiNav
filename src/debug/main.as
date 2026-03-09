@@ -67,6 +67,14 @@ namespace Debug {
         bool visible = true;
     }
 
+    class ControlTreeOverlayRootsCacheEntry {
+        uint epoch = 0;
+        uint mobilsLen = 0;
+        uint scanIx = 0;
+        bool complete = false;
+        array<int> rootIxs;
+    }
+
     Mode g_Mode = Mode::ML;
 
     string g_MlSearch = "";
@@ -166,6 +174,8 @@ namespace Debug {
     string g_ControlTreeSnippetKey = "";
     string g_ControlTreeSnippetEdit = "";
 
+    dictionary g_ControlTreeOverlayRootsCache;
+
     [Setting hidden name="UiNav debug ML tree width"]
     int S_MlTreeWidth = 420;
 
@@ -186,6 +196,12 @@ namespace Debug {
 
     [Setting hidden name="UiNav debug tree row budget (0 = unlimited)"]
     int S_DebugTreeRowBudget = 800;
+
+    [Setting hidden name="UiNav debug ControlTree hide empty roots"]
+    bool S_ControlTreeHideEmptyRoots = true;
+
+    [Setting hidden name="UiNav debug ControlTree overlay root scan budget"]
+    uint S_ControlTreeOverlayRootScanBudget = 2048;
 
     bool g_WidthsInit = false;
 

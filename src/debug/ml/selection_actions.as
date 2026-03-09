@@ -180,6 +180,35 @@ namespace Debug {
         if (g_MlNodeFocusStatus.Length > 0) UI::Text(g_MlNodeFocusStatus);
 
         UI::Separator();
+        UI::Text("Live overlay");
+        bool liveLayerBox = UiNav::Builder::S_LiveLayerBoundsOverlayEnabled;
+        liveLayerBox = UI::Checkbox("Live layer box##ml-actions-live-layer-box", liveLayerBox);
+        if (liveLayerBox != UiNav::Builder::S_LiveLayerBoundsOverlayEnabled) {
+            UiNav::Builder::S_LiveLayerBoundsOverlayEnabled = liveLayerBox;
+            if (liveLayerBox) UiNav::Builder::RefreshLiveLayerBoundsOverlay(true);
+            else UiNav::Builder::DestroyLiveLayerBoundsOverlay();
+        }
+        if (UI::IsItemHovered()) {
+            UI::SetTooltip("Draw bounds for the selected ML layer or subtree in the live UI.");
+        }
+        UI::SameLine();
+        bool liveParentBox = UiNav::Builder::S_LiveLayerBoundsOverlayParentChainEnabled;
+        liveParentBox = UI::Checkbox("Parent chain##ml-actions-live-layer-parent", liveParentBox);
+        if (liveParentBox != UiNav::Builder::S_LiveLayerBoundsOverlayParentChainEnabled) {
+            UiNav::Builder::S_LiveLayerBoundsOverlayParentChainEnabled = liveParentBox;
+            if (UiNav::Builder::S_LiveLayerBoundsOverlayEnabled) UiNav::Builder::RefreshLiveLayerBoundsOverlay(true);
+        }
+        if (UI::IsItemHovered()) {
+            UI::SetTooltip("Also draw bounds for each direct parent path of the selected ML node in the live UI.");
+        }
+        if (UiNav::Builder::S_LiveLayerBoundsOverlayEnabled) {
+            UI::SameLine();
+            if (UI::Button("Refresh##ml-actions-live-layer-box")) {
+                UiNav::Builder::RefreshLiveLayerBoundsOverlay(true);
+            }
+        }
+
+        UI::Separator();
         UI::Text("Lock selected value");
         _MlValueLocksEnsureLoaded();
 

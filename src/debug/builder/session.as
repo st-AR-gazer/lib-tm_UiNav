@@ -238,6 +238,85 @@ namespace Builder {
         return m;
     }
 
+    bool _BuilderBoundsSame(const BuilderAbsMetrics@ a, const BuilderAbsMetrics@ b, float eps = 0.01f) {
+        if (a is null || b is null) return false;
+        if (!a.ok || !b.ok) return false;
+        return Math::Abs(a.boundsMin.x - b.boundsMin.x) <= eps
+            && Math::Abs(a.boundsMin.y - b.boundsMin.y) <= eps
+            && Math::Abs(a.boundsMax.x - b.boundsMax.x) <= eps
+            && Math::Abs(a.boundsMax.y - b.boundsMax.y) <= eps;
+    }
+
+    int _CountBuilderParentChain(const BuilderDocument@ doc, int nodeIx) {
+        if (doc is null) return 0;
+        if (nodeIx < 0 || nodeIx >= int(doc.nodes.Length)) return 0;
+
+        auto node = doc.nodes[uint(nodeIx)];
+        if (node is null) return 0;
+
+        int count = 0;
+        int parentIx = node.parentIx;
+        int guard = 0;
+        while (parentIx >= 0 && parentIx < int(doc.nodes.Length) && guard < 256) {
+            guard++;
+            auto parent = doc.nodes[uint(parentIx)];
+            if (parent is null) break;
+            count++;
+            parentIx = parent.parentIx;
+        }
+        return count;
+    }
+
+    string _DescribeBuilderParentChainOverlapWarnings(const BuilderDocument@ doc, int nodeIx) {
+        if (doc is null) return "";
+        if (nodeIx < 0 || nodeIx >= int(doc.nodes.Length)) return "";
+
+        array<BuilderAbsMetrics@> seen;
+        array<string> seenNames;
+
+        auto selectedMetrics = ComputeAbsMetrics(doc, nodeIx);
+        if (selectedMetrics !is null && selectedMetrics.ok) {
+            seen.InsertLast(selectedMetrics);
+            seenNames.InsertLast("selected");
+        }
+
+        auto node = doc.nodes[uint(nodeIx)];
+        if (node is null) return "";
+
+        string outText = "";
+        int parentIx = node.parentIx;
+        int depth = 0;
+        int guard = 0;
+        while (parentIx >= 0 && parentIx < int(doc.nodes.Length) && guard < 256) {
+            guard++;
+            auto parent = doc.nodes[uint(parentIx)];
+            if (parent is null) break;
+
+            auto parentMetrics = ComputeAbsMetrics(doc, parentIx);
+            if (parentMetrics !is null && parentMetrics.ok) {
+                string matches = "";
+                for (uint i = 0; i < seen.Length; ++i) {
+                    if (!_BuilderBoundsSame(parentMetrics, seen[i])) continue;
+                    if (matches.Length > 0) matches += ", ";
+                    matches += seenNames[i];
+                }
+
+                if (matches.Length > 0) {
+                    if (outText.Length > 0) outText += "\n";
+                    outText += "Parent " + (depth + 1) + " shares bounds with " + matches + ".";
+                }
+
+                seen.InsertLast(parentMetrics);
+                seenNames.InsertLast("parent " + (depth + 1));
+            }
+
+            parentIx = parent.parentIx;
+            depth++;
+        }
+
+        return outText;
+    }
+
     void _BoundsUpdateAll(_PreviewBoundsState@ st, const vec2 &in bMin, const vec2 &in bMax) {
         if (st is null) return;
         if (!st.hasAll) {
@@ -897,10 +976,39 @@ namespace Builder {
         return true;
     }
 
+    bool _SelectorSyncHitToEnabledInspectors(int hitIx) {
+        bool wantMl = S_SelectorSyncMlSelection;
+        bool wantControlTree = S_SelectorSyncControlTreeSelection;
+        if (!wantMl && !wantControlTree) return true;
+
+        bool mlOk = !wantMl || SelectorSyncHitToMlSelection(hitIx);
+        bool ctOk = !wantControlTree || SelectorSyncHitToControlTreeSelection(hitIx);
+
+        if (wantMl && wantControlTree) {
+            if (mlOk && ctOk) g_SelectorStatus = "Synced selected hit to ManiaLink UI and ControlTree selections.";
+            else if (mlOk) g_SelectorStatus = "Synced selected hit to ManiaLink UI selection; ControlTree sync failed.";
+            else if (ctOk) g_SelectorStatus = "Synced selected hit to ControlTree selection; ManiaLink UI sync failed.";
+            else g_SelectorStatus = "Could not sync selected hit to ManiaLink UI or ControlTree selection.";
+            return mlOk || ctOk;
+        }
+
+        if (wantMl) {
+            g_SelectorStatus = mlOk
+                ? "Synced selected hit to ManiaLink UI selection."
+                : "Could not sync selected hit to ManiaLink UI selection.";
+            return mlOk;
+        }
+
+        g_SelectorStatus = ctOk
+            ? "Synced selected hit to ControlTree selection."
+            : "Could not sync selected hit to ControlTree selection.";
+        return ctOk;
+    }
+
     bool SelectorSelectHit(int hitIx, bool syncMlSelection = false) {
         if (hitIx < 0 || hitIx >= int(g_SelectorHits.Length)) return false;
         g_SelectorSelectedHitIx = hitIx;
-        if (syncMlSelection) return SelectorSyncHitToMlSelection(hitIx);
+        if (syncMlSelection) return _SelectorSyncHitToEnabledInspectors(hitIx);
         return true;
     }
 
@@ -1017,8 +1125,8 @@ namespace Builder {
             + _SelectorAppKindLabel(top.appKind) + " L" + top.layerIx
             + (top.path.Length > 0 ? ("/" + top.path) : "/<root>");
 
-        if (S_SelectorSyncMlSelection) {
-            SelectorSyncHitToMlSelection(0);
+        if (S_SelectorSyncMlSelection || S_SelectorSyncControlTreeSelection) {
+            _SelectorSyncHitToEnabledInspectors(0);
         }
         return true;
     }
@@ -1050,8 +1158,52 @@ namespace Builder {
         UiNav::Debug::g_MlNodeFocusStatus = "Selector synced selection and focused path.";
 
         if (S_LiveLayerBoundsOverlayEnabled) {
-            RefreshLiveLayerBoundsOverlay(false, /*quiet=*/true);
+            RefreshLiveLayerBoundsOverlay(false, true);
         }
+        return true;
+    }
+
+    bool SelectorSyncHitToControlTreeSelection(int hitIx) {
+        if (hitIx < 0 || hitIx >= int(g_SelectorHits.Length)) return false;
+        auto row = g_SelectorHits[uint(hitIx)];
+        if (row is null) return false;
+
+        auto layer = _GetLayerByKindIx(row.appKind, row.layerIx);
+        if (layer is null || layer.LocalPage is null || layer.LocalPage.MainFrame is null) return false;
+
+        CGameManialinkControl@ mlNode = null;
+        bool hiddenAncestor = false;
+        int clipDepth = 0;
+        if (!_ResolveLiveNodeByPath(layer.LocalPage.MainFrame, row.path, mlNode, hiddenAncestor, clipDepth) || mlNode is null) {
+            return false;
+        }
+
+        CControlBase@ controlTree = null;
+        try {
+            @controlTree = mlNode.Control;
+        } catch {
+            @controlTree = null;
+        }
+        if (controlTree is null) return false;
+
+        uint overlay = 0;
+        int rootIx = -1;
+        string relPath = "";
+        if (!UiNav::Debug::_FindControlTreePathForControlAnyOverlay(controlTree, overlay, rootIx, relPath) || rootIx < 0) {
+            return false;
+        }
+
+        UiNav::Debug::_ClearControlTreeNodeFocus();
+        UiNav::Debug::g_ControlTreeOverlay = int(overlay);
+
+        string rootUiPath = "O" + overlay + "/root[" + rootIx + "]";
+        string uiPath = rootUiPath + (relPath.Length > 0 ? ("/" + relPath) : "");
+        string displayPath = "overlay[" + overlay + "]/root[" + rootIx + "]";
+        if (relPath.Length > 0) displayPath += "/" + relPath;
+
+        UiNav::Debug::_SelectControlTree(controlTree, relPath, displayPath, uiPath, rootIx, overlay);
+        UiNav::Debug::_ControlTreeExpandToUiPath(uiPath);
+        UiNav::Debug::g_ControlTreeSelectionStatus = "Selector synced selection to ControlTree.";
         return true;
     }
 
@@ -1272,7 +1424,56 @@ namespace Builder {
         return "UiNav_BuilderLiveBoundsOverlay";
     }
 
-    void _AppendLiveLayerBoundsOverlayNodes(BuilderDocument@ doc, const LiveLayerBoundsRow@ selectedRow, int selectedLayerIx, const string &in selectedPath = "") {
+    string _LiveBoundsParentPath(const string &in rawPath) {
+        string path = rawPath.Trim();
+        if (path.Length == 0) return "";
+        auto parts = path.Split("/");
+        string outPath = "";
+        bool first = true;
+        int lastNonEmpty = -1;
+        for (uint i = 0; i < parts.Length; ++i) {
+            if (parts[i].Trim().Length > 0) lastNonEmpty = int(i);
+        }
+        if (lastNonEmpty <= 0) return "";
+        for (int i = 0; i < lastNonEmpty; ++i) {
+            string part = parts[uint(i)].Trim();
+            if (part.Length == 0) continue;
+            if (!first) outPath += "/";
+            outPath += part;
+            first = false;
+        }
+        return outPath;
+    }
+
+    void _AppendLiveLayerBoundsOverlayEntryNodes(BuilderDocument@ doc, const LiveLayerBoundsRow@ row, int layerIx,
+                                                 const string &in path, const string &in color,
+                                                 float fillOpacity, float lineOpacity, float zBase, const string &in labelPrefix) {
+        if (doc is null || row is null || !row.hasAll) return;
+
+        vec2 minP = row.minAll;
+        vec2 maxP = row.maxAll;
+        vec2 center = (minP + maxP) * 0.5f;
+        vec2 size = maxP - minP;
+        if (size.x < 0.001f || size.y < 0.001f) return;
+
+        float t = 0.95f;
+        string pathKey = path.Length == 0 ? "root" : path.Replace("/", "_");
+        string uidPrefix = "__uinav_live_bounds_" + labelPrefix + "_l" + layerIx + "_" + pathKey + "_";
+        doc.nodes.InsertLast(_MakeOverlayQuad(uidPrefix + "fill", center, size, color, fillOpacity, zBase));
+        doc.nodes.InsertLast(_MakeOverlayQuad(uidPrefix + "top", vec2(center.x, maxP.y), vec2(size.x, t), color, lineOpacity, zBase + 0.1f));
+        doc.nodes.InsertLast(_MakeOverlayQuad(uidPrefix + "bot", vec2(center.x, minP.y), vec2(size.x, t), color, lineOpacity, zBase + 0.1f));
+        doc.nodes.InsertLast(_MakeOverlayQuad(uidPrefix + "l", vec2(minP.x, center.y), vec2(t, size.y), color, lineOpacity, zBase + 0.1f));
+        doc.nodes.InsertLast(_MakeOverlayQuad(uidPrefix + "r", vec2(maxP.x, center.y), vec2(t, size.y), color, lineOpacity, zBase + 0.1f));
+
+        string visMark = row.visible ? "V" : "H";
+        string pathSuffix = path.Length > 0 ? (" /" + path) : "";
+        string lbl = labelPrefix + " L[" + layerIx + "]" + pathSuffix + " " + visMark + " n=" + row.nodes;
+        doc.nodes.InsertLast(_MakeOverlayLabel(uidPrefix + "lbl", vec2(center.x, maxP.y + 6.0f), vec2(260, 6), lbl, color, 1.55f, zBase + 0.2f));
+    }
+
+    void _AppendLiveLayerBoundsOverlayNodes(BuilderDocument@ doc, const LiveLayerBoundsRow@ selectedRow, int selectedLayerIx,
+                                            const string &in selectedPath = "", const array<LiveLayerBoundsRow@>@ parentRows = null,
+                                            const array<string>@ parentPaths = null) {
         if (doc is null) return;
 
         doc.nodes.InsertLast(_MakeOverlayQuad("__uinav_live_bounds_origin_h", vec2(0, 0), vec2(20, 0.5f), "fff", 0.65f, 12000.0f));
@@ -1284,30 +1485,22 @@ namespace Builder {
             return;
         }
 
-        if (selectedRow !is null && selectedRow.hasAll) {
-            vec2 minP = selectedRow.minAll;
-            vec2 maxP = selectedRow.maxAll;
-            vec2 center = (minP + maxP) * 0.5f;
-            vec2 size = maxP - minP;
-            if (size.x >= 0.001f && size.y >= 0.001f) {
-                string color = selectedRow.visible ? "ff0" : "f6a";
-                float fillOpacity = 0.09f;
-                float lineOpacity = 0.88f;
-                float t = 0.95f;
-                float zBase = 11900.0f;
-
-                string uidPrefix = "__uinav_live_bounds_l" + selectedLayerIx + "_";
-                doc.nodes.InsertLast(_MakeOverlayQuad(uidPrefix + "fill", center, size, color, fillOpacity, zBase));
-                doc.nodes.InsertLast(_MakeOverlayQuad(uidPrefix + "top", vec2(center.x, maxP.y), vec2(size.x, t), color, lineOpacity, zBase + 0.1f));
-                doc.nodes.InsertLast(_MakeOverlayQuad(uidPrefix + "bot", vec2(center.x, minP.y), vec2(size.x, t), color, lineOpacity, zBase + 0.1f));
-                doc.nodes.InsertLast(_MakeOverlayQuad(uidPrefix + "l", vec2(minP.x, center.y), vec2(t, size.y), color, lineOpacity, zBase + 0.1f));
-                doc.nodes.InsertLast(_MakeOverlayQuad(uidPrefix + "r", vec2(maxP.x, center.y), vec2(t, size.y), color, lineOpacity, zBase + 0.1f));
-
-                string visMark = selectedRow.visible ? "V" : "H";
-                string pathSuffix = selectedPath.Length > 0 ? (" /" + selectedPath) : "";
-                string lbl = "L[" + selectedLayerIx + "]" + pathSuffix + " " + visMark + " n=" + selectedRow.nodes;
-                doc.nodes.InsertLast(_MakeOverlayLabel(uidPrefix + "lbl", vec2(center.x, maxP.y + 6.0f), vec2(260, 6), lbl, color, 1.6f, zBase + 0.2f));
+        if (parentRows !is null && parentPaths !is null) {
+            uint count = Math::Min(parentRows.Length, parentPaths.Length);
+            for (uint i = 0; i < count; ++i) {
+                auto row = parentRows[i];
+                if (row is null) continue;
+                string color = _PreviewAncestorOverlayColor(int(i));
+                float fillOpacity = Math::Max(0.02f, 0.05f - float(i) * 0.005f);
+                float lineOpacity = Math::Max(0.40f, 0.78f - float(i) * 0.08f);
+                float zBase = 11880.0f - float(i) * 2.0f;
+                _AppendLiveLayerBoundsOverlayEntryNodes(doc, row, selectedLayerIx, parentPaths[i], color, fillOpacity, lineOpacity, zBase, "P" + (i + 1));
             }
+        }
+
+        if (selectedRow !is null && selectedRow.hasAll) {
+            string color = selectedRow.visible ? "ff0" : "f6a";
+            _AppendLiveLayerBoundsOverlayEntryNodes(doc, selectedRow, selectedLayerIx, selectedPath, color, 0.09f, 0.88f, 11900.0f, "SEL");
         }
 
         _RebuildNodeIndex(doc);
@@ -1332,6 +1525,8 @@ namespace Builder {
         }
 
         LiveLayerBoundsRow@ targetRow = null;
+        array<LiveLayerBoundsRow@> parentRows;
+        array<string> parentPaths;
         if (hasTarget) {
             auto layer = _GetLayerByKindIx(targetAppKind, targetLayerIx);
             bool okScan = false;
@@ -1345,11 +1540,31 @@ namespace Builder {
                 if (!quiet) g_Status = "Live bounds overlay failed: target layer unavailable.";
                 return false;
             }
+
+            if (targetFromMlSelection && targetPath.Length > 0 && S_LiveLayerBoundsOverlayParentChainEnabled) {
+                string parentPath = _LiveBoundsParentPath(targetPath);
+                int depth = 0;
+                while (depth < 64) {
+                    LiveLayerBoundsRow@ parentRow = null;
+                    bool parentOk = false;
+                    if (parentPath.Length > 0) parentOk = _ScanLiveLayerBoundsPathRow(layer, targetAppKind, targetLayerIx, parentPath, parentRow);
+                    else parentOk = _ScanLiveLayerBoundsRow(layer, targetAppKind, targetLayerIx, parentRow);
+
+                    if (parentOk && parentRow !is null) {
+                        parentRows.InsertLast(parentRow);
+                        parentPaths.InsertLast(parentPath);
+                    }
+
+                    if (parentPath.Length == 0) break;
+                    parentPath = _LiveBoundsParentPath(parentPath);
+                    depth++;
+                }
+            }
         }
 
         auto doc = _NewDocument();
         doc.name = "UiNav_BuilderLiveBoundsOverlay";
-        _AppendLiveLayerBoundsOverlayNodes(doc, targetRow, hasTarget ? targetLayerIx : -1, targetFromMlSelection ? targetPath : "");
+        _AppendLiveLayerBoundsOverlayNodes(doc, targetRow, hasTarget ? targetLayerIx : -1, targetFromMlSelection ? targetPath : "", parentRows, parentPaths);
 
         string xml = ExportToXml(doc);
         if (xml.Length == 0) {
@@ -1627,6 +1842,91 @@ namespace Builder {
             "BOUNDS " + _FmtVec2(minP) + " .. " + _FmtVec2(maxP), "0f0", 1.6f, 9992.0f));
     }
 
+    void _AppendPreviewBoundsOutlineNodes(BuilderDocument@ doc, const string &in prefix, const BuilderAbsMetrics@ metrics,
+                                          const string &in color, float fillOpacity, float edgeOpacity, float zBase) {
+        if (doc is null || metrics is null || !metrics.ok) return;
+
+        vec2 minP = metrics.boundsMin;
+        vec2 maxP = metrics.boundsMax;
+        vec2 center = (minP + maxP) * 0.5f;
+        vec2 size = maxP - minP;
+        if (size.x < 0.001f || size.y < 0.001f) return;
+
+        float t = 0.6f;
+        doc.nodes.InsertLast(_MakeOverlayQuad(prefix + "_fill", center, size, color, fillOpacity, zBase));
+        doc.nodes.InsertLast(_MakeOverlayQuad(prefix + "_top", vec2(center.x, maxP.y), vec2(size.x, t), color, edgeOpacity, zBase + 1.0f));
+        doc.nodes.InsertLast(_MakeOverlayQuad(prefix + "_bot", vec2(center.x, minP.y), vec2(size.x, t), color, edgeOpacity, zBase + 1.0f));
+        doc.nodes.InsertLast(_MakeOverlayQuad(prefix + "_l", vec2(minP.x, center.y), vec2(t, size.y), color, edgeOpacity, zBase + 1.0f));
+        doc.nodes.InsertLast(_MakeOverlayQuad(prefix + "_r", vec2(maxP.x, center.y), vec2(t, size.y), color, edgeOpacity, zBase + 1.0f));
+    }
+
+    string _PreviewAncestorOverlayColor(int depth) {
+        const string[] palette = {"fa0", "f70", "f48", "d5f", "8cf", "4fd"};
+        if (depth < 0) depth = 0;
+        if (depth >= int(palette.Length)) depth = int(palette.Length) - 1;
+        return palette[uint(depth)];
+    }
+
+    void _AppendPreviewSelectedParentOverlayNodes(BuilderDocument@ doc, const BuilderDocument@ previewDoc, int nodeIx, BuilderAbsMetrics@ selectedMetrics = null) {
+        if (doc is null || previewDoc is null) return;
+        if (nodeIx < 0 || nodeIx >= int(previewDoc.nodes.Length)) return;
+
+        auto selected = previewDoc.nodes[uint(nodeIx)];
+        if (selected is null) return;
+
+        array<BuilderAbsMetrics@> seen;
+        if (selectedMetrics !is null && selectedMetrics.ok) {
+            seen.InsertLast(selectedMetrics);
+        }
+
+        int parentIx = selected.parentIx;
+        int depth = 0;
+        while (parentIx >= 0 && parentIx < int(previewDoc.nodes.Length) && depth < 64) {
+            auto parentMetrics = ComputeAbsMetrics(previewDoc, parentIx);
+            if (parentMetrics !is null && parentMetrics.ok) {
+                int sameBoundsCount = 0;
+                for (uint i = 0; i < seen.Length; ++i) {
+                    if (_BuilderBoundsSame(parentMetrics, seen[i])) sameBoundsCount++;
+                }
+
+                float fillOpacity = Math::Max(0.02f, 0.045f - float(depth) * 0.004f);
+                float edgeOpacity = Math::Max(0.38f, 0.70f - float(depth) * 0.06f);
+                float zBase = 9983.0f - float(depth) * 2.0f;
+                string color = _PreviewAncestorOverlayColor(depth);
+                _AppendPreviewBoundsOutlineNodes(
+                    doc,
+                    "__uinav_dbg_sel_parent_" + depth,
+                    parentMetrics,
+                    color,
+                    fillOpacity,
+                    edgeOpacity,
+                    zBase
+                );
+
+                vec2 center = (parentMetrics.boundsMin + parentMetrics.boundsMax) * 0.5f;
+                float labelY = parentMetrics.boundsMax.y + 6.0f + float(sameBoundsCount) * 5.0f;
+                string lbl = "P" + (depth + 1) + " pos=" + _FmtVec2(parentMetrics.absPos);
+                if (sameBoundsCount > 0) lbl += "  ! same bounds";
+                doc.nodes.InsertLast(_MakeOverlayLabel(
+                    "__uinav_dbg_sel_parent_lbl_" + depth,
+                    vec2(center.x, labelY),
+                    vec2(240, 6),
+                    lbl,
+                    color,
+                    1.35f,
+                    zBase + 2.0f
+                ));
+
+                seen.InsertLast(parentMetrics);
+            }
+
+            auto parent = previewDoc.nodes[uint(parentIx)];
+            if (parent is null) break;
+            parentIx = parent.parentIx;
+            depth++;
+        }
+    }
+
     void _AppendPreviewSelectedOverlayNodes(BuilderDocument@ doc, const BuilderAbsMetrics@ sel) {
         if (doc is null || sel is null || !sel.ok) return;
 
@@ -1639,12 +1939,7 @@ namespace Builder {
         doc.nodes.InsertLast(_MakeOverlayQuad("__uinav_dbg_sel_anchor_h", sel.absPos, vec2(18, 0.6f), "ff0", 0.92f, 10002.0f));
         doc.nodes.InsertLast(_MakeOverlayQuad("__uinav_dbg_sel_anchor_v", sel.absPos, vec2(0.6f, 18), "ff0", 0.92f, 10002.0f));
 
-        float t = 0.6f;
-        doc.nodes.InsertLast(_MakeOverlayQuad("__uinav_dbg_sel_fill", center, size, "ff0", 0.06f, 9993.0f));
-        doc.nodes.InsertLast(_MakeOverlayQuad("__uinav_dbg_sel_top", vec2(center.x, maxP.y), vec2(size.x, t), "ff0", 0.80f, 9994.0f));
-        doc.nodes.InsertLast(_MakeOverlayQuad("__uinav_dbg_sel_bot", vec2(center.x, minP.y), vec2(size.x, t), "ff0", 0.80f, 9994.0f));
-        doc.nodes.InsertLast(_MakeOverlayQuad("__uinav_dbg_sel_l", vec2(minP.x, center.y), vec2(t, size.y), "ff0", 0.80f, 9994.0f));
-        doc.nodes.InsertLast(_MakeOverlayQuad("__uinav_dbg_sel_r", vec2(maxP.x, center.y), vec2(t, size.y), "ff0", 0.80f, 9994.0f));
+        _AppendPreviewBoundsOutlineNodes(doc, "__uinav_dbg_sel", sel, "ff0", 0.06f, 0.80f, 9993.0f);
 
         vec2 sz = maxP - minP;
         string lbl = "SELECTED bounds " + _FmtVec2(minP) + " .. " + _FmtVec2(maxP)
@@ -2342,6 +2637,7 @@ namespace Builder {
 
         bool wantClone = S_PreviewDebugOverlayEnabled
             || S_PreviewSelectedBoundsOverlayEnabled
+            || S_PreviewSelectedParentBoundsOverlayEnabled
             || S_PreviewSanitizeInvalidTags
             || S_PreviewOmitGenericCommonAttrs
             || g_PreviewForceFitOnce;
@@ -2416,11 +2712,14 @@ namespace Builder {
         }
 
         BuilderAbsMetrics@ selAbs = null;
-        if (tmp !is null && S_PreviewSelectedBoundsOverlayEnabled && g_SelectedNodeIx >= 0) {
+        if (tmp !is null && (S_PreviewSelectedBoundsOverlayEnabled || S_PreviewSelectedParentBoundsOverlayEnabled) && g_SelectedNodeIx >= 0) {
             @selAbs = ComputeAbsMetrics(previewDoc, g_SelectedNodeIx);
         }
 
         if (tmp !is null && S_PreviewDebugOverlayEnabled) _AppendPreviewOverlayNodes(tmp, boundsSt);
+        if (tmp !is null && S_PreviewSelectedParentBoundsOverlayEnabled && g_SelectedNodeIx >= 0) {
+            _AppendPreviewSelectedParentOverlayNodes(tmp, previewDoc, g_SelectedNodeIx, selAbs);
+        }
         if (tmp !is null && S_PreviewSelectedBoundsOverlayEnabled && selAbs !is null && selAbs.ok) _AppendPreviewSelectedOverlayNodes(tmp, selAbs);
 
         string xml = ExportToXml(previewDoc);

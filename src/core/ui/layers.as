@@ -19,6 +19,12 @@ namespace Layers {
     [Setting hidden name="UiNav: layer req frame memo max entries"]
     uint S_LayerReqFrameMemoMax = 256;
 
+    [Setting hidden name="UiNav: persist owned layers across reloads"]
+    bool S_PersistOwnedLayersAcrossReloads = true;
+
+    [Setting hidden name="UiNav: owned layers state path"]
+    string S_OwnedLayersStatePath = IO::FromStorageFolder("UiNav/OwnedLayersState.json");
+
     class LayerReqCacheEntry {
         int lastIx = -1;
         CGameUILayer@ lastLayer = null;
@@ -62,8 +68,40 @@ namespace Layers {
         if (req is null) return "";
         string key = _LayerReqKey(req);
         if (key.Length == 0) return "";
-        key += "|h=" + tostring(req.layerIxHint);
+        string hintsKey = _LayerReqHintsKey(req);
+        if (hintsKey.Length > 0) key += "|h=" + hintsKey;
         return key;
+    }
+
+    void _AppendLayerIxHintUnique(array<int> &out hints, int ix) {
+        if (ix < 0) return;
+        for (uint i = 0; i < hints.Length; ++i) {
+            if (hints[i] == ix) return;
+        }
+        hints.InsertLast(ix);
+    }
+
+    void _CollectLayerIxHints(const ManiaLinkReq@ req, array<int> &out hints) {
+        hints.Resize(0);
+        if (req is null) return;
+
+        for (uint i = 0; i < req.layerIxHints.Length; ++i) {
+            _AppendLayerIxHintUnique(hints, req.layerIxHints[i]);
+        }
+        _AppendLayerIxHintUnique(hints, req.layerIxHint);
+    }
+
+    string _LayerReqHintsKey(const ManiaLinkReq@ req) {
+        array<int> hints;
+        _CollectLayerIxHints(req, hints);
+        if (hints.Length == 0) return "";
+
+        string outKey = "";
+        for (uint i = 0; i < hints.Length; ++i) {
+            if (i > 0) outKey += ",";
+            outKey += tostring(hints[i]);
+        }
+        return outKey;
     }
 
     void _ClearLayerReqFrameMemo() {
@@ -479,8 +517,12 @@ namespace Layers {
             g_LayerReqCacheMisses++;
         }
 
-        if (req.layerIxHint >= 0) {
-            uint ix = uint(req.layerIxHint);
+        array<int> layerHints;
+        _CollectLayerIxHints(req, layerHints);
+        for (uint h = 0; h < layerHints.Length; ++h) {
+            int hintIx = layerHints[h];
+            if (hintIx < 0) continue;
+            uint ix = uint(hintIx);
             if (ix < layersLen) {
                 auto cand = _LayerAtSource(source, app, ix);
                 if (_Matches(req, cand)) {
@@ -571,10 +613,150 @@ namespace Layers {
         string lastPage;
         bool visibleWanted = true;
         uint lastEnsureMs = 0;
+        bool restorePending = false;
     }
 
     dictionary g_Owned;
     uint g_LastDestroyAllOwnedSweepCount = 0;
+    bool g_OwnedStateLoaded = false;
+
+    string _OwnedLayersStatePath() {
+        string path = S_OwnedLayersStatePath.Trim();
+        if (path.Length == 0) path = IO::FromStorageFolder("UiNav/OwnedLayersState.json");
+        return path;
+    }
+
+    void _ClearOwnedLayersStateFile() {
+        string path = _OwnedLayersStatePath();
+        if (path.Length == 0 || !IO::FileExists(path)) return;
+        IO::Delete(path);
+    }
+
+    void _SaveOwnedLayersState() {
+        if (!S_PersistOwnedLayersAcrossReloads) {
+            _ClearOwnedLayersStateFile();
+            return;
+        }
+
+        Json::Value@ root = Json::Object();
+        Json::Value@ entries = Json::Object();
+        int count = 0;
+
+        array<string> keys = g_Owned.GetKeys();
+        keys.SortAsc();
+        for (uint i = 0; i < keys.Length; ++i) {
+            auto ol = _GetOwned(keys[i]);
+            if (ol is null) continue;
+            if (ol.key.Trim().Length == 0) continue;
+            if (ol.lastPage.Length == 0) continue;
+
+            Json::Value@ item = Json::Object();
+            item["key"] = ol.key;
+            item["source"] = int(ol.source);
+            item["page"] = ol.lastPage;
+            item["visible"] = ol.visibleWanted;
+            entries["i" + count] = item;
+            count++;
+        }
+
+        root["count"] = count;
+        root["entries"] = entries;
+
+        string path = _OwnedLayersStatePath();
+        string folder = Path::GetDirectoryName(path);
+        if (folder.Length > 0 && !IO::FolderExists(folder)) IO::CreateFolder(folder, true);
+        _IO::File::WriteFile(path, Json::Write(root), false);
+    }
+
+    void _LoadOwnedLayersState() {
+        if (g_OwnedStateLoaded) return;
+        g_OwnedStateLoaded = true;
+
+        if (!S_PersistOwnedLayersAcrossReloads) return;
+
+        string path = _OwnedLayersStatePath();
+        if (path.Length == 0 || !IO::FileExists(path)) return;
+
+        string raw = _IO::File::ReadFileToEnd(path).Trim();
+        if (raw.Length == 0) return;
+
+        Json::Value@ root = null;
+        try {
+            @root = Json::Parse(raw);
+        } catch {
+            @root = null;
+        }
+        if (root is null) return;
+
+        int count = 0;
+        try {
+            count = int(root["count"]);
+        } catch {
+            count = 0;
+        }
+        if (count <= 0) return;
+
+        const Json::Value@ entries = root["entries"];
+        if (entries is null) return;
+
+        for (int i = 0; i < count; ++i) {
+            string itemKey = "i" + i;
+            const Json::Value@ item = entries[itemKey];
+            if (item is null) continue;
+
+            string key = "";
+            string page = "";
+            bool visible = true;
+            int sourceInt = int(ManiaLinkSource::CurrentApp);
+            try { key = string(item["key"]); } catch { key = ""; }
+            try { page = string(item["page"]); } catch { page = ""; }
+            try { visible = bool(item["visible"]); } catch { visible = true; }
+            try { sourceInt = int(item["source"]); } catch { sourceInt = int(ManiaLinkSource::CurrentApp); }
+
+            key = key.Trim();
+            if (key.Length == 0 || page.Length == 0) continue;
+
+            OwnedLayer@ ol = _GetOwned(key);
+            if (ol is null) {
+                @ol = OwnedLayer();
+                ol.key = key;
+                _SetOwned(key, ol);
+            }
+
+            ol.source = ManiaLinkSource(sourceInt);
+            ol.lastPage = page;
+            ol.visibleWanted = visible;
+            ol.restorePending = true;
+            @ol.layer = null;
+        }
+    }
+
+    void TickOwnedRestore() {
+        _LoadOwnedLayersState();
+
+        array<string> keys = g_Owned.GetKeys();
+        for (uint i = 0; i < keys.Length; ++i) {
+            auto ol = _GetOwned(keys[i]);
+            if (ol is null || !ol.restorePending) continue;
+            if (ol.lastPage.Length == 0) {
+                ol.restorePending = false;
+                continue;
+            }
+
+            ManiaLinkSource resolved = ol.source;
+            CGameManiaApp@ app = null;
+            if (!_ResolveLayerSource(ol.source, resolved, app)) continue;
+
+            auto layer = _EnsureAtResolvedSource(ol.key, ol.lastPage, resolved, app, ol.visibleWanted);
+            if (layer !is null) {
+                ol.restorePending = false;
+            }
+        }
+    }
+
+    void OnPluginUnload() {
+        _SaveOwnedLayersState();
+    }
 
     uint LastDestroyAllOwnedSweepCount() {
         return g_LastDestroyAllOwnedSweepCount;

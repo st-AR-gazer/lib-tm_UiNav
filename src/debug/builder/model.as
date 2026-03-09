@@ -38,8 +38,14 @@ namespace Builder {
     [Setting hidden name="UiNav Builder v1.2 preview selected node overlay enabled"]
     bool S_PreviewSelectedBoundsOverlayEnabled = false;
 
+    [Setting hidden name="UiNav Builder v1.2 preview selected parent overlay enabled"]
+    bool S_PreviewSelectedParentBoundsOverlayEnabled = false;
+
     [Setting hidden name="UiNav Builder v1.2 live bounds overlay enabled"]
     bool S_LiveLayerBoundsOverlayEnabled = false;
+
+    [Setting hidden name="UiNav Builder v1.2 live bounds overlay parent chain enabled"]
+    bool S_LiveLayerBoundsOverlayParentChainEnabled = false;
 
     [Setting hidden name="UiNav Builder v1.2 preview sanitize invalid tags"]
     bool S_PreviewSanitizeInvalidTags = false;
@@ -64,6 +70,9 @@ namespace Builder {
 
     [Setting hidden name="UiNav Builder v1.2 selector sync ML selection"]
     bool S_SelectorSyncMlSelection = true;
+
+    [Setting hidden name="UiNav Builder v1.2 selector sync ControlTree selection"]
+    bool S_SelectorSyncControlTreeSelection = true;
 
     [Setting hidden name="UiNav Builder v1.2 selector stay armed"]
     bool S_SelectorStayArmed = false;

@@ -77,7 +77,7 @@ namespace Debug {
         code += "UiNav::ManiaLinkReq@ req = UiNav::ManiaLinkReq();\n";
         code += "req.source = " + _MlSourceEnumExpr(g_SelectedMlAppKind) + ";\n";
         if (layerIx >= 0) {
-            code += "req.layerIxHint = " + layerIx + ";\n";
+            code += "req.layerIxHints.InsertLast(" + layerIx + ");\n";
         }
         if (layerName.Length > 0) {
             code += "req.pageNeedle = \"" + safeLayerName + "\";\n";

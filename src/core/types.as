@@ -45,6 +45,21 @@ namespace UiNav {
         bool mustHaveLocalPage = true;
 
         int layerIxHint = -1;
+        array<int> layerIxHints;
+
+        void AddLayerIxHint(int ix) {
+            if (ix < 0) return;
+            if (layerIxHint < 0) layerIxHint = ix;
+            for (uint i = 0; i < layerIxHints.Length; ++i) {
+                if (layerIxHints[i] == ix) return;
+            }
+            layerIxHints.InsertLast(ix);
+        }
+
+        void ClearLayerIxHints() {
+            layerIxHint = -1;
+            layerIxHints.Resize(0);
+        }
     }
 
     shared class Requires {

@@ -108,7 +108,8 @@ In practice: use `*Ex` while developing/debugging and switch to the simple varia
 - `mustHaveLocalPage` (default `true`): require `layer.LocalPage != null` and `LocalPage.MainFrame != null` for "active"
 - `pageNeedle`: substring that must exist in `layer.ManialinkPage` or `ManialinkPageUtf8`
 - `rootControlId`: require that the ML tree contains a node with this `ControlId`
-- `layerIxHint`: optional index hint (faster/more stable when you already know the layer index)
+- `layerIxHints`: optional ordered index hint list; tried first in order before a full scan
+- `layerIxHint`: legacy single index hint; still accepted and appended after `layerIxHints` when set
 
 ### `ManiaLinkSpec` (node selection inside a layer)
 

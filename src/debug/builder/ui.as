@@ -1,6 +1,20 @@
 namespace UiNav {
 namespace Builder {
 
+    void _SetBuilderParentChainTooltip() {
+        string tooltip = "Draw bounds for every direct parent of the selected Builder node in preview.";
+        int boundsIx = g_BoundsTargetNodeIx >= 0 ? g_BoundsTargetNodeIx : g_SelectedNodeIx;
+        if (boundsIx >= 0) {
+            int parentCount = _CountBuilderParentChain(g_Doc, boundsIx);
+            tooltip += "\nCurrent chain: " + parentCount + " parent(s).";
+            string overlapWarning = _DescribeBuilderParentChainOverlapWarnings(g_Doc, boundsIx);
+            if (overlapWarning.Length > 0) {
+                tooltip += "\n\nWarning:\n" + overlapWarning;
+            }
+        }
+        UI::SetTooltip(tooltip);
+    }
+
     string _AppKindLabel(int appKind) {
         if (appKind == 0) return "Playground";
         if (appKind == 1) return "Menu";
@@ -39,7 +53,7 @@ namespace Builder {
     }
 
     void _RefreshPreviewForBoundsTargetChange() {
-        if (!S_PreviewSelectedBoundsOverlayEnabled) return;
+        if (!S_PreviewSelectedBoundsOverlayEnabled && !S_PreviewSelectedParentBoundsOverlayEnabled) return;
         _RefreshPreviewForBoundsOverlayToggle();
     }
 
@@ -853,6 +867,16 @@ namespace Builder {
         if (UI::IsItemHovered()) {
             UI::SetTooltip("Draw bounds/anchor for the selected Builder node in preview.");
         }
+        UI::SameLine();
+        bool builderParentOverlay = S_PreviewSelectedParentBoundsOverlayEnabled;
+        builderParentOverlay = UI::Checkbox("Parent chain##builder-edit-selected-parent-overlay", builderParentOverlay);
+        if (builderParentOverlay != S_PreviewSelectedParentBoundsOverlayEnabled) {
+            S_PreviewSelectedParentBoundsOverlayEnabled = builderParentOverlay;
+            _RefreshPreviewForBoundsOverlayToggle();
+        }
+        if (UI::IsItemHovered()) {
+            _SetBuilderParentChainTooltip();
+        }
     }
 
 
@@ -941,6 +965,15 @@ namespace Builder {
                 S_PreviewSelectedBoundsOverlayEnabled = UI::Checkbox("Selected bounds##bv-ov-selected", S_PreviewSelectedBoundsOverlayEnabled);
                 if (S_PreviewSelectedBoundsOverlayEnabled != prevSelBounds) {
                     _RefreshPreviewForBoundsOverlayToggle();
+                }
+                UI::SameLine();
+                bool prevParentBounds = S_PreviewSelectedParentBoundsOverlayEnabled;
+                S_PreviewSelectedParentBoundsOverlayEnabled = UI::Checkbox("Parent chain##bv-ov-selected-parent", S_PreviewSelectedParentBoundsOverlayEnabled);
+                if (S_PreviewSelectedParentBoundsOverlayEnabled != prevParentBounds) {
+                    _RefreshPreviewForBoundsOverlayToggle();
+                }
+                if (UI::IsItemHovered()) {
+                    _SetBuilderParentChainTooltip();
                 }
 
                 S_PreviewSanitizeInvalidTags = UI::Checkbox("Sanitize tags##bv-san", S_PreviewSanitizeInvalidTags);
@@ -1136,6 +1169,7 @@ namespace Builder {
 
             S_SelectorIncludeHidden = UI::Checkbox("Include hidden nodes##bv-selector-hidden", S_SelectorIncludeHidden);
             S_SelectorSyncMlSelection = UI::Checkbox("Sync ManiaLink UI selection##bv-selector-sync", S_SelectorSyncMlSelection);
+            S_SelectorSyncControlTreeSelection = UI::Checkbox("Sync ControlTree selection##bv-selector-sync-ct", S_SelectorSyncControlTreeSelection);
 
             if (g_SelectorArmed) {
                 UI::Text("\\$ff0" + Icons::Crosshairs + "\\$z Armed: left-click target element.");
@@ -1222,7 +1256,9 @@ namespace Builder {
                         UI::TableSetColumnIndex(0);
                         if (UI::Button((sel ? Icons::ChevronRight : Icons::Crosshairs) + "##bv-selector-pick-" + i, vec2(22, 0))) {
                             g_SelectorSelectedHitIx = int(i);
-                            if (S_SelectorSyncMlSelection) SelectorSyncHitToMlSelection(g_SelectorSelectedHitIx);
+                            if (S_SelectorSyncMlSelection || S_SelectorSyncControlTreeSelection) {
+                                SelectorSelectHit(g_SelectorSelectedHitIx, true);
+                            }
                         }
                         UI::TableSetColumnIndex(1);
                         UI::Text(tostring(i + 1));
@@ -1252,9 +1288,22 @@ namespace Builder {
                     UI::Separator();
                     UI::Text(SelectorHitSummary(h, g_SelectorSelectedHitIx + 1));
 
-                    if (UI::Button(Icons::ChevronRight + " Sync Selected To ML##bv-selector-sync-one")) {
-                        SelectorSyncHitToMlSelection(g_SelectorSelectedHitIx);
-                        g_SelectorStatus = "Synced selected hit to ManiaLink UI selection.";
+                    if (UI::Button(Icons::ChevronRight + " Sync Selected##bv-selector-sync-one")) {
+                        SelectorSelectHit(g_SelectorSelectedHitIx, true);
+                    }
+                    UI::SameLine();
+                    if (UI::Button(Icons::ShareSquareO + " Sync To ML##bv-selector-sync-ml-one")) {
+                        bool ok = SelectorSyncHitToMlSelection(g_SelectorSelectedHitIx);
+                        g_SelectorStatus = ok
+                            ? "Synced selected hit to ManiaLink UI selection."
+                            : "Could not sync selected hit to ManiaLink UI selection.";
+                    }
+                    UI::SameLine();
+                    if (UI::Button(Icons::ShareSquareO + " Sync To CT##bv-selector-sync-ct-one")) {
+                        bool ok = SelectorSyncHitToControlTreeSelection(g_SelectorSelectedHitIx);
+                        g_SelectorStatus = ok
+                            ? "Synced selected hit to ControlTree selection."
+                            : "Could not sync selected hit to ControlTree selection.";
                     }
                     UI::SameLine();
                     if (UI::Button(Icons::Clipboard + " Copy Selected##bv-selector-copy-one")) {

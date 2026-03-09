@@ -102,16 +102,6 @@ namespace Debug {
         UI::SameLine();
         UI::TextDisabled("|");
         UI::SameLine();
-        bool liveLayerBox = UiNav::Builder::S_LiveLayerBoundsOverlayEnabled;
-        liveLayerBox = UI::Checkbox("Live layer box##ml-live-layer-box", liveLayerBox);
-        if (liveLayerBox != UiNav::Builder::S_LiveLayerBoundsOverlayEnabled) {
-            UiNav::Builder::S_LiveLayerBoundsOverlayEnabled = liveLayerBox;
-            if (liveLayerBox) UiNav::Builder::RefreshLiveLayerBoundsOverlay(true);
-            else UiNav::Builder::DestroyLiveLayerBoundsOverlay();
-        }
-        if (UI::IsItemHovered()) {
-            UI::SetTooltip("Draw bounds for selected ML layer/subtree in live UI.");
-        }
         UI::Text("\\$888Search: words (AND), \"quoted text\", -exclude, id:, text:, class:, type:, path:, vis:true/false\\$z");
         UI::Text("\\$888Scope: " + (S_MlSearchGlobal ? "global (full tree)" : "visible only (open rows)") + "\\$z");
         if (g_MlViewLayerIndex < -1) g_MlViewLayerIndex = -1;
@@ -718,6 +708,7 @@ namespace Debug {
             UI::Text("No matching controls.");
         } else if (g_MlRowsTruncated) {
             UI::Text("\\$f80Tree rows truncated at budget " + S_DebugTreeRowBudget + ". Refine search or open fewer branches.\\$z");
+            _RenderTreeRowBudgetOverride("ml");
         }
 
         UI::Dummy(vec2(0, UI::GetFrameHeightWithSpacing()));
