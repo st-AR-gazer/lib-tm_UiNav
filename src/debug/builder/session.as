@@ -1031,11 +1031,13 @@ namespace Builder {
         int mlAppKind = _SelectorMapBuilderAppKindToDebugMlKind(row.appKind);
         UiNav::Debug::g_MlActiveAppKind = mlAppKind;
         @UiNav::Debug::g_SelectedMlNode = null;
+        UiNav::Debug::_ClearMlNodeFocus();
         UiNav::Debug::g_SelectedMlAppKind = mlAppKind;
         UiNav::Debug::g_SelectedMlLayerIx = row.layerIx;
         UiNav::Debug::g_SelectedMlPath = row.path;
         UiNav::Debug::g_SelectedMlUiPath = _SelectorMlPrefixByDebugKind(mlAppKind)
             + "/L" + row.layerIx + (row.path.Length > 0 ? ("/" + row.path) : "");
+        string layerUiPath = _SelectorMlPrefixByDebugKind(mlAppKind) + "/L" + row.layerIx;
         UiNav::Debug::g_MlViewLayerIndex = row.layerIx;
         UiNav::Debug::g_MlFlatDirty = true;
         UiNav::Debug::g_MlNodeFocusActive = true;
@@ -1043,7 +1045,9 @@ namespace Builder {
         UiNav::Debug::g_MlNodeFocusLayerIx = row.layerIx;
         UiNav::Debug::g_MlNodeFocusPath = row.path;
         UiNav::Debug::g_MlNodeFocusUiPath = UiNav::Debug::g_SelectedMlUiPath;
-        UiNav::Debug::_SetMlTreeOpen(UiNav::Debug::g_MlNodeFocusUiPath, true);
+        UiNav::Debug::_SetMlTreeOpen(layerUiPath, false);
+        UiNav::Debug::_SetMlTreeOpen(UiNav::Debug::g_SelectedMlUiPath, false);
+        UiNav::Debug::g_MlNodeFocusStatus = "Selector synced selection and focused path.";
 
         if (S_LiveLayerBoundsOverlayEnabled) {
             RefreshLiveLayerBoundsOverlay(false, /*quiet=*/true);

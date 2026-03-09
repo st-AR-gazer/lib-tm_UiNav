@@ -93,9 +93,11 @@ namespace Debug {
         g_SelectedMlPath = "";
         g_SelectedMlLayerIx = -1;
         g_SelectedMlAppKind = 0;
+        _ClearMlNodeFocus();
     }
 
     void _SelectMl(CGameManialinkControl@ n, const string &in path, const string &in uiPath, int layerIx) {
+        _ClearMlNodeFocus();
         @g_SelectedMlNode = null;
         g_SelectedMlUiPath = uiPath;
         g_SelectedMlPath = path;
@@ -156,7 +158,25 @@ namespace Debug {
         return base;
     }
 
+    void _PersistMlNodeFocusToTreeOpen() {
+        if (!g_MlNodeFocusActive || g_MlNodeFocusLayerIx < 0) return;
+
+        string uiPath = _MlAppPrefixByKind(g_MlNodeFocusAppKind) + "/L" + g_MlNodeFocusLayerIx;
+        _SetMlTreeOpen(uiPath, true);
+
+        if (g_MlNodeFocusPath.Length == 0) return;
+
+        auto parts = g_MlNodeFocusPath.Split("/");
+        for (uint i = 0; i < parts.Length; ++i) {
+            string part = parts[i].Trim();
+            if (part.Length == 0) continue;
+            uiPath += "/" + part;
+            _SetMlTreeOpen(uiPath, true);
+        }
+    }
+
     void _ClearMlNodeFocus() {
+        _PersistMlNodeFocusToTreeOpen();
         g_MlNodeFocusActive = false;
         g_MlNodeFocusAppKind = 0;
         g_MlNodeFocusLayerIx = -1;
@@ -179,7 +199,6 @@ namespace Debug {
         g_MlNodeFocusPath = g_SelectedMlPath;
         g_MlNodeFocusUiPath = g_SelectedMlUiPath;
         g_MlViewLayerIndex = g_SelectedMlLayerIx;
-        _SetMlTreeOpen(g_MlNodeFocusUiPath, true);
         return true;
     }
 

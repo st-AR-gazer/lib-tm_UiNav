@@ -123,10 +123,10 @@ namespace Debug {
         }
 
         if (g_MlNodeFocusActive && g_MlNodeFocusAppKind == appKind) {
-            string parentPath = _MlNodeFocusParentPathDisplay();
-            UI::TextDisabled("Focused parent path:");
+            string focusPath = g_MlNodeFocusUiPath.Length > 0 ? g_MlNodeFocusUiPath : _MlNodeFocusParentPathDisplay();
+            UI::TextDisabled("Focused path:");
             UI::SameLine();
-            UI::Text(parentPath.Length > 0 ? parentPath : "<none>");
+            UI::Text(focusPath.Length > 0 ? focusPath : "<none>");
             UI::SameLine();
             if (UI::Button("Clear node focus##ml-pane")) {
                 _ClearMlNodeFocus();
@@ -143,7 +143,10 @@ namespace Debug {
         UI::BeginGroup();
         UI::Text("Tree");
         UI::SameLine();
-        if (UI::Button("Collapse all##ml")) g_MlCollapseAll = true;
+        if (UI::Button("Collapse all##ml")) {
+            _MlCancelNodeFocusForTreeInteraction();
+            g_MlCollapseAll = true;
+        }
         UI::SameLine();
         UI::TextDisabled("|");
         UI::SameLine();
@@ -189,11 +192,15 @@ namespace Debug {
         return palette[layerIx % palette.Length];
     }
 
-    void _DrawLayerRowHighlight(bool selected, bool viewed) {
-        if (!selected && !viewed) return;
+    void _DrawLayerRowHighlight(bool selected, bool viewed, bool focusedPath = false) {
+        if (!selected && !viewed && !focusedPath) return;
         vec4 r = UI::GetItemRect();
         vec4 box = vec4(r.x - 2.0f, r.y - 1.0f, r.z + 2.0f, r.w + 1.0f);
         auto dl = UI::GetWindowDrawList();
+        if (focusedPath) {
+            dl.AddRectFilled(box, vec4(0.98f, 0.77f, 0.28f, 0.07f));
+            dl.AddRect(box, vec4(0.98f, 0.77f, 0.28f, 0.42f));
+        }
         if (selected) {
             dl.AddRectFilled(box, vec4(0.28f, 0.62f, 1.0f, 0.11f));
             dl.AddRect(box, vec4(0.40f, 0.74f, 1.0f, 0.48f));
@@ -201,6 +208,37 @@ namespace Debug {
         }
         dl.AddRectFilled(box, vec4(0.28f, 0.62f, 1.0f, 0.06f));
         dl.AddRect(box, vec4(0.40f, 0.74f, 1.0f, 0.24f));
+    }
+
+    bool _MlUiPathMatchesPrefix(const string &in prefix, const string &in path) {
+        if (prefix.Length == 0 || path.Length < prefix.Length) return false;
+        if (!path.StartsWith(prefix)) return false;
+        if (path.Length == prefix.Length) return true;
+        return path.SubStr(prefix.Length, 1) == "/";
+    }
+
+    bool _MlNodeFocusAppliesToActiveApp() {
+        return g_MlNodeFocusActive
+            && g_MlNodeFocusAppKind == g_MlActiveAppKind
+            && g_MlNodeFocusLayerIx >= 0
+            && g_MlNodeFocusUiPath.Length > 0;
+    }
+
+    string _MlNodeFocusLayerUiPath() {
+        if (!_MlNodeFocusAppliesToActiveApp()) return "";
+        return _MlAppPrefixByKind(g_MlNodeFocusAppKind) + "/L" + g_MlNodeFocusLayerIx;
+    }
+
+    bool _MlNodeFocusContainsUiPath(const string &in uiPath) {
+        if (!_MlNodeFocusAppliesToActiveApp()) return false;
+        if (!_MlUiPathMatchesPrefix(uiPath, g_MlNodeFocusUiPath)) return false;
+        return true;
+    }
+
+    void _MlCancelNodeFocusForTreeInteraction() {
+        if (!g_MlNodeFocusActive) return;
+        _ClearMlNodeFocus();
+        g_MlNodeFocusStatus = "Cleared node focus.";
     }
 
     string _MlFavoritePreviewLabel(int appKind) {
@@ -266,7 +304,7 @@ namespace Debug {
             if (S_MlSearchGlobal) {
                 matches = _MlSubtreeMatchesCached(n, uiPath, filter, searchTerms);
             } else {
-                bool allowChildren = _IsMlTreeOpen(uiPath);
+                bool allowChildren = _IsMlTreeOpen(uiPath) || _MlNodeFocusContainsUiPath(uiPath);
                 matches = _MlSubtreeMatchesVisibleCached(n, uiPath, filter, searchTerms, allowChildren);
             }
             if (!matches) return;
@@ -301,21 +339,24 @@ namespace Debug {
             UI::SameLine();
         }
 
-        bool open = hasChildren && _IsMlTreeOpen(uiPath);
+        bool open = hasChildren && (_IsMlTreeOpen(uiPath) || _MlNodeFocusContainsUiPath(uiPath));
         if (_DrawTreeToggleButton("ml-node-exp-" + uiPath, open, hasChildren)) {
+            _MlCancelNodeFocusForTreeInteraction();
             _SetMlTreeOpen(uiPath, !open);
         }
         UI::SameLine();
 
         string rowLabel = _MlLabel(n, uiPath);
         bool selected = (g_SelectedMlUiPath == uiPath);
+        bool focusedPath = _MlNodeFocusContainsUiPath(uiPath);
         UI::Selectable(rowLabel + "##ml-node-label-" + uiPath, false);
-        _DrawLayerRowHighlight(selected, false);
+        _DrawLayerRowHighlight(selected, false, focusedPath);
         bool rowHovered = UI::IsItemHovered();
         bool rowOpenRequested = false;
         bool rowSelectRequested = false;
         _TreeRowMouseActions(rowHovered, hasChildren, rowOpenRequested, rowSelectRequested);
         if (rowOpenRequested) {
+            _MlCancelNodeFocusForTreeInteraction();
             _SetMlTreeOpen(uiPath, !open);
         }
         if (rowSelectRequested) _SelectMl(n, path, uiPath, layerIx);
@@ -331,7 +372,10 @@ namespace Debug {
             if (UI::MenuItem("Select node")) _SelectMl(n, path, uiPath, layerIx);
             if (UI::MenuItem("Focus this layer")) g_MlViewLayerIndex = layerIx;
             if (UI::MenuItem("Show all layers")) g_MlViewLayerIndex = -1;
-            if (hasChildren && UI::MenuItem("Open node tree")) _SetMlTreeOpen(uiPath, true);
+            if (hasChildren && UI::MenuItem("Open node tree")) {
+                _MlCancelNodeFocusForTreeInteraction();
+                _SetMlTreeOpen(uiPath, true);
+            }
 
             _MlValueLocksEnsureLoaded();
             UI::Separator();
@@ -409,7 +453,7 @@ namespace Debug {
 
         UI::PopID();
 
-        if (!hasChildren || !_IsMlTreeOpen(uiPath)) return;
+        if (!hasChildren || !open) return;
         for (uint i = 0; i < frame.Controls.Length; ++i) {
             if (g_MlRowsTruncated) break;
             auto ch = frame.Controls[i];
@@ -431,7 +475,7 @@ namespace Debug {
             if (S_MlSearchGlobal) {
                 matches = _MlSubtreeMatchesCached(root, layerUiPath, filter, searchTerms);
             } else {
-                bool allowChildren = _IsMlTreeOpen(layerUiPath);
+                bool allowChildren = _IsMlTreeOpen(layerUiPath) || _MlNodeFocusContainsUiPath(layerUiPath);
                 matches = _MlSubtreeMatchesVisibleCached(root, layerUiPath, filter, searchTerms, allowChildren);
             }
             if (!matches) return;
@@ -466,8 +510,9 @@ namespace Debug {
         if (visible != prevVisible) layer.IsVisible = visible;
         UI::SameLine();
 
-        bool open = hasChildren && _IsMlTreeOpen(layerUiPath);
+        bool open = hasChildren && (_IsMlTreeOpen(layerUiPath) || _MlNodeFocusContainsUiPath(layerUiPath));
         if (_DrawTreeToggleButton("ml-layer-exp-" + layerUiPath, open, hasChildren)) {
+            _MlCancelNodeFocusForTreeInteraction();
             _SetMlTreeOpen(layerUiPath, !open);
         }
         UI::SameLine();
@@ -475,8 +520,9 @@ namespace Debug {
         string rowLabel = _LayerTextColorCode(layerIx) + layerLabel + "\\$z";
         bool selected = (g_SelectedMlUiPath == layerUiPath);
         bool viewed = (g_MlViewLayerIndex >= 0 && g_MlViewLayerIndex == layerIx);
+        bool focusedPath = _MlNodeFocusContainsUiPath(layerUiPath);
         UI::Selectable(rowLabel + "##ml-layer-label-" + layerUiPath, false);
-        _DrawLayerRowHighlight(selected, viewed);
+        _DrawLayerRowHighlight(selected, viewed, focusedPath);
         bool rowHovered = UI::IsItemHovered();
         if (selected || viewed || rowHovered) {
             tag = UiNav::LayerTags::GetTagForLayer(layer, layerIx);
@@ -485,6 +531,7 @@ namespace Debug {
         bool rowSelectRequested = false;
         _TreeRowMouseActions(rowHovered, hasChildren, rowOpenRequested, rowSelectRequested);
         if (rowOpenRequested) {
+            _MlCancelNodeFocusForTreeInteraction();
             _SetMlTreeOpen(layerUiPath, !open);
         }
         if (rowSelectRequested && root !is null) _SelectMl(root, "", layerUiPath, layerIx);
@@ -502,7 +549,10 @@ namespace Debug {
 
             if (UI::MenuItem("Focus this layer")) g_MlViewLayerIndex = layerIx;
             if (UI::MenuItem("Show all layers")) g_MlViewLayerIndex = -1;
-            if (UI::MenuItem("Open layer tree")) _SetMlTreeOpen(layerUiPath, true);
+            if (UI::MenuItem("Open layer tree")) {
+                _MlCancelNodeFocusForTreeInteraction();
+                _SetMlTreeOpen(layerUiPath, true);
+            }
             if (root !is null && UI::MenuItem("Select layer")) _SelectMl(root, "", layerUiPath, layerIx);
             if (UI::MenuItem("Copy layer to Builder")) {
                 string builderStatus = "";
@@ -600,7 +650,7 @@ namespace Debug {
 
         UI::PopID();
 
-        if (!hasChildren || !_IsMlTreeOpen(layerUiPath)) return;
+        if (!hasChildren || !open) return;
         for (uint j = 0; j < rootFrame.Controls.Length; ++j) {
             if (g_MlRowsTruncated) break;
             auto ch = rootFrame.Controls[j];
@@ -659,30 +709,6 @@ namespace Debug {
         string filter;
         array<_SearchTerm@> searchTerms;
         _MlPrepareLayersTreeRender(filter, searchTerms);
-
-        if (g_MlNodeFocusActive && g_MlNodeFocusAppKind == g_MlActiveAppKind) {
-            CGameManialinkFrame@ focusRoot = null;
-            CGameManialinkControl@ focusNode = null;
-            bool ok = _ResolveMlNodeByPath(g_MlNodeFocusAppKind, g_MlNodeFocusLayerIx, g_MlNodeFocusPath, focusRoot, focusNode);
-            if (!ok || focusNode is null) {
-                UI::Text("\\$f80Focused node is no longer available. Clear node focus to continue.\\$z");
-                return;
-            }
-
-            string focusUi = g_MlNodeFocusUiPath;
-            if (focusUi.Length == 0) {
-                focusUi = _MlAppPrefixByKind(g_MlNodeFocusAppKind) + "/L" + g_MlNodeFocusLayerIx;
-                if (g_MlNodeFocusPath.Length > 0) focusUi += "/" + g_MlNodeFocusPath;
-            }
-            _SetMlTreeOpen(focusUi, true);
-            _RenderMlNodeTree(focusNode, g_MlNodeFocusPath, focusUi, 0, g_MlNodeFocusLayerIx, filter, searchTerms);
-            if (g_MlRowsRendered == 0) UI::Text("No matching controls.");
-            else if (g_MlRowsTruncated) {
-                UI::Text("\\$f80Tree rows truncated at budget " + S_DebugTreeRowBudget + ". Refine search or open fewer branches.\\$z");
-            }
-            UI::Dummy(vec2(0, UI::GetFrameHeightWithSpacing()));
-            return;
-        }
 
         uint layersLen = _GetMlLayerCount(g_MlActiveAppKind);
         int added = _RenderMlLayersTreeForApp(g_MlActiveAppKind, filter, searchTerms);
