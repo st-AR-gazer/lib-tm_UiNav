@@ -607,6 +607,7 @@ namespace Layers {
     }
 
     class OwnedLayer {
+        string scopeId;
         string key;
         CGameUILayer@ layer;
         ManiaLinkSource source = ManiaLinkSource::CurrentApp;
@@ -619,6 +620,32 @@ namespace Layers {
     dictionary g_Owned;
     uint g_LastDestroyAllOwnedSweepCount = 0;
     bool g_OwnedStateLoaded = false;
+
+    string _CurrentCallerScope() {
+        Meta::Plugin@ plugin = Meta::ExecutingPlugin();
+        string scopeId = "";
+        if (plugin !is null) {
+            try { scopeId = plugin.ID.Trim(); } catch { scopeId = ""; }
+            if (scopeId.Length == 0) {
+                try { scopeId = plugin.Name.Trim(); } catch { scopeId = ""; }
+            }
+        }
+        if (scopeId.Length == 0) scopeId = "UiNav";
+        return scopeId;
+    }
+
+    string _OwnedCompositeKey(const string &in scopeIdRaw, const string &in keyRaw) {
+        string scopeId = scopeIdRaw.Trim();
+        string key = keyRaw.Trim();
+        if (scopeId.Length == 0 || key.Length == 0) return "";
+        return scopeId + "|" + key;
+    }
+
+    bool _OwnedScopePluginLoaded(const string &in scopeIdRaw) {
+        string scopeId = scopeIdRaw.Trim();
+        if (scopeId.Length == 0) return false;
+        return Meta::GetPluginFromID(scopeId) !is null;
+    }
 
     string _OwnedLayersStatePath() {
         string path = S_OwnedLayersStatePath.Trim();
@@ -645,12 +672,14 @@ namespace Layers {
         array<string> keys = g_Owned.GetKeys();
         keys.SortAsc();
         for (uint i = 0; i < keys.Length; ++i) {
-            auto ol = _GetOwned(keys[i]);
+            auto ol = _GetOwnedByComposite(keys[i]);
             if (ol is null) continue;
+            if (ol.scopeId.Trim().Length == 0) continue;
             if (ol.key.Trim().Length == 0) continue;
             if (ol.lastPage.Length == 0) continue;
 
             Json::Value@ item = Json::Object();
+            item["scope"] = ol.scopeId;
             item["key"] = ol.key;
             item["source"] = int(ol.source);
             item["page"] = ol.lastPage;
@@ -704,25 +733,31 @@ namespace Layers {
             const Json::Value@ item = entries[itemKey];
             if (item is null) continue;
 
+            string scopeId = "";
             string key = "";
             string page = "";
             bool visible = true;
             int sourceInt = int(ManiaLinkSource::CurrentApp);
+            try { scopeId = string(item["scope"]); } catch { scopeId = ""; }
             try { key = string(item["key"]); } catch { key = ""; }
             try { page = string(item["page"]); } catch { page = ""; }
             try { visible = bool(item["visible"]); } catch { visible = true; }
             try { sourceInt = int(item["source"]); } catch { sourceInt = int(ManiaLinkSource::CurrentApp); }
 
+            scopeId = scopeId.Trim();
             key = key.Trim();
+            if (scopeId.Length == 0) scopeId = "UiNav";
             if (key.Length == 0 || page.Length == 0) continue;
 
-            OwnedLayer@ ol = _GetOwned(key);
+            OwnedLayer@ ol = _GetOwned(scopeId, key);
             if (ol is null) {
                 @ol = OwnedLayer();
+                ol.scopeId = scopeId;
                 ol.key = key;
-                _SetOwned(key, ol);
+                _SetOwned(scopeId, key, ol);
             }
 
+            ol.scopeId = scopeId;
             ol.source = ManiaLinkSource(sourceInt);
             ol.lastPage = page;
             ol.visibleWanted = visible;
@@ -736,8 +771,17 @@ namespace Layers {
 
         array<string> keys = g_Owned.GetKeys();
         for (uint i = 0; i < keys.Length; ++i) {
-            auto ol = _GetOwned(keys[i]);
-            if (ol is null || !ol.restorePending) continue;
+            auto ol = _GetOwnedByComposite(keys[i]);
+            if (ol is null) continue;
+            if (!_OwnedScopePluginLoaded(ol.scopeId)) {
+                if (ol.layer !is null) {
+                    _DestroyOwnedLayerHandle(ol.layer);
+                    @ol.layer = null;
+                }
+                ol.restorePending = true;
+                continue;
+            }
+            if (!ol.restorePending) continue;
             if (ol.lastPage.Length == 0) {
                 ol.restorePending = false;
                 continue;
@@ -747,7 +791,7 @@ namespace Layers {
             CGameManiaApp@ app = null;
             if (!_ResolveLayerSource(ol.source, resolved, app)) continue;
 
-            auto layer = _EnsureAtResolvedSource(ol.key, ol.lastPage, resolved, app, ol.visibleWanted);
+            auto layer = _EnsureAtResolvedSource(ol.scopeId, ol.key, ol.lastPage, resolved, app, ol.visibleWanted);
             if (layer !is null) {
                 ol.restorePending = false;
             }
@@ -762,22 +806,29 @@ namespace Layers {
         return g_LastDestroyAllOwnedSweepCount;
     }
 
-    OwnedLayer@ _GetOwned(const string &in key) {
-        if (key.Length == 0) return null;
+    OwnedLayer@ _GetOwnedByComposite(const string &in compositeKey) {
+        if (compositeKey.Length == 0) return null;
         OwnedLayer@ outL;
-        if (g_Owned.Get(key, @outL)) return outL;
+        if (g_Owned.Get(compositeKey, @outL)) return outL;
         return null;
     }
 
+    OwnedLayer@ _GetOwned(const string &in scopeId, const string &in key) {
+        string compositeKey = _OwnedCompositeKey(scopeId, key);
+        if (compositeKey.Length == 0) return null;
+        return _GetOwnedByComposite(compositeKey);
+    }
+
     CGameUILayer@ GetOwned(const string &in key) {
-        auto ol = _GetOwned(key);
+        auto ol = _GetOwned(_CurrentCallerScope(), key);
         if (ol is null) return null;
         return ol.layer;
     }
 
-    void _SetOwned(const string &in key, OwnedLayer@ l) {
-        if (key.Length == 0) return;
-        g_Owned.Set(key, @l);
+    void _SetOwned(const string &in scopeId, const string &in key, OwnedLayer@ l) {
+        string compositeKey = _OwnedCompositeKey(scopeId, key);
+        if (compositeKey.Length == 0) return;
+        g_Owned.Set(compositeKey, @l);
     }
 
     CGameManiaApp@ _ResolveOwnedLayerApp() {
@@ -979,16 +1030,18 @@ namespace Layers {
         return false;
     }
 
-    CGameUILayer@ _EnsureAtResolvedSource(const string &in key, const string &in page, ManiaLinkSource source, CGameManiaApp@ app, bool visible) {
+    CGameUILayer@ _EnsureAtResolvedSource(const string &in scopeId, const string &in key, const string &in page, ManiaLinkSource source, CGameManiaApp@ app, bool visible) {
         if (source != ManiaLinkSource::Editor && app is null) return null;
 
-        OwnedLayer@ ol = _GetOwned(key);
+        OwnedLayer@ ol = _GetOwned(scopeId, key);
 
         if (ol is null) {
             @ol = OwnedLayer();
+            ol.scopeId = scopeId;
             ol.key = key;
-            _SetOwned(key, ol);
+            _SetOwned(scopeId, key, ol);
         }
+        ol.scopeId = scopeId;
 
         if (ol.layer !is null && !_LayerBelongsToSource(source, app, ol.layer)) {
             _DestroyOwnedLayerHandle(ol.layer);
@@ -1018,28 +1071,28 @@ namespace Layers {
         return ol.layer;
     }
 
-    CGameUILayer@ _EnsureAtApp(const string &in key, const string &in page, CGameManiaApp@ app, bool visible) {
-        return _EnsureAtResolvedSource(key, page, ManiaLinkSource::CurrentApp, app, visible);
+    CGameUILayer@ _EnsureAtApp(const string &in scopeId, const string &in key, const string &in page, CGameManiaApp@ app, bool visible) {
+        return _EnsureAtResolvedSource(scopeId, key, page, ManiaLinkSource::CurrentApp, app, visible);
     }
 
     CGameUILayer@ EnsureAtApp(const string &in key, const string &in page, CGameManiaApp@ app, bool visible = true) {
-        return _EnsureAtApp(key, page, app, visible);
+        return _EnsureAtApp(_CurrentCallerScope(), key, page, app, visible);
     }
 
     CGameUILayer@ Ensure(const string &in key, const string &in page, bool visible = true) {
         auto app = _ResolveOwnedLayerApp();
-        return _EnsureAtApp(key, page, app, visible);
+        return _EnsureAtApp(_CurrentCallerScope(), key, page, app, visible);
     }
 
     CGameUILayer@ EnsureOwned(const string &in key, const string &in page, ManiaLinkSource source = ManiaLinkSource::CurrentApp, bool visible = true) {
         ManiaLinkSource resolved = source;
         CGameManiaApp@ app = null;
         if (!_ResolveLayerSource(source, resolved, app)) return null;
-        return _EnsureAtResolvedSource(key, page, resolved, app, visible);
+        return _EnsureAtResolvedSource(_CurrentCallerScope(), key, page, resolved, app, visible);
     }
 
-    bool Destroy(const string &in key) {
-        OwnedLayer@ ol = _GetOwned(key);
+    bool Destroy(const string &in scopeId, const string &in key) {
+        OwnedLayer@ ol = _GetOwned(scopeId, key);
         if (ol is null) return false;
 
         bool hadLayer = ol.layer !is null;
@@ -1049,20 +1102,27 @@ namespace Layers {
             @ol.layer = null;
         }
 
-        g_Owned.Delete(key);
+        string compositeKey = _OwnedCompositeKey(scopeId, key);
+        if (compositeKey.Length > 0) g_Owned.Delete(compositeKey);
         return !hadLayer || removedLayer;
     }
 
-    bool DestroyOwned(const string &in key) {
-        return Destroy(key);
+    bool Destroy(const string &in key) {
+        return Destroy(_CurrentCallerScope(), key);
     }
 
-    void DestroyAllOwned() {
+    bool DestroyOwned(const string &in key) {
+        return Destroy(_CurrentCallerScope(), key);
+    }
+
+    void DestroyAllOwnedGlobal() {
         g_LastDestroyAllOwnedSweepCount = 0;
 
         array<string> keys = g_Owned.GetKeys();
         for (uint i = 0; i < keys.Length; ++i) {
-            Destroy(keys[i]);
+            auto ol = _GetOwnedByComposite(keys[i]);
+            if (ol is null) continue;
+            Destroy(ol.scopeId, ol.key);
         }
         g_Owned.DeleteAll();
 
@@ -1078,6 +1138,20 @@ namespace Layers {
         removed += _DestroyUiNavPrefixedLayersInEditor();
         if (removed < 0) removed = 0;
         g_LastDestroyAllOwnedSweepCount = uint(removed);
+    }
+
+    void DestroyAllOwned() {
+        g_LastDestroyAllOwnedSweepCount = 0;
+
+        string scopeId = _CurrentCallerScope();
+        array<string> keys = g_Owned.GetKeys();
+        uint removed = 0;
+        for (uint i = 0; i < keys.Length; ++i) {
+            auto ol = _GetOwnedByComposite(keys[i]);
+            if (ol is null || ol.scopeId != scopeId) continue;
+            if (Destroy(scopeId, ol.key)) removed++;
+        }
+        g_LastDestroyAllOwnedSweepCount = removed;
     }
 
 }

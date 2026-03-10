@@ -6,14 +6,20 @@ namespace UiNav {
 
         uint startedAt = Time::Now;
         OpResult@ last = null;
+        @last = UiNav::IsReadyEx(t);
+        if (last !is null && last.Ok()) {
+            UiNav::Metrics::Record("wait_for_target", Time::Now - startedAt);
+            return last;
+        }
+
         uint until = Time::Now + uint(timeoutMs);
         while (Time::Now < until) {
+            yield(pollMs);
             @last = UiNav::IsReadyEx(t);
             if (last !is null && last.Ok()) {
                 UiNav::Metrics::Record("wait_for_target", Time::Now - startedAt);
                 return last;
             }
-            yield(pollMs);
         }
 
         OpResult@ res = OpResult();

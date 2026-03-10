@@ -27,7 +27,170 @@ namespace Debug {
         return Icons::FileO;
     }
 
+    string _MlBrowserShortTileLabel(const string &in rawLabel, uint maxChars = 22) {
+        string label = rawLabel.Trim();
+        int maxCharsInt = int(maxChars);
+        if (int(label.Length) > maxCharsInt && maxCharsInt > 3) {
+            label = label.SubStr(0, maxCharsInt - 3) + "...";
+        }
+        return label;
+    }
+
+    void _MlBrowserRenderFolderGridTile(const MlBrowserEntry@ entry, int index, float tileW, float tileH) {
+        if (entry is null) return;
+
+        UI::PushID("ml-browser-folder-tile-" + index);
+        bool activateRequested = false;
+        bool tileHovered = false;
+        bool tileOpen = UI::BeginChild(
+            "##ml-browser-folder-tile",
+            vec2(tileW, tileH),
+            true,
+            UI::WindowFlags::NoScrollbar | UI::WindowFlags::NoScrollWithMouse
+        );
+        if (tileOpen) {
+            float thumbH = Math::Max(72.0f, tileH - 34.0f);
+            bool thumbOpen = UI::BeginChild(
+                "##ml-browser-folder-thumb",
+                vec2(0, thumbH),
+                true,
+                UI::WindowFlags::NoScrollbar | UI::WindowFlags::NoScrollWithMouse
+            );
+            if (thumbOpen) {
+                UI::Texture@ tex = null;
+                string err = "";
+                bool loading = false;
+                bool hasTex = _MlBrowserTryGetThumbTexture(entry.url, tex, err, loading);
+                if (hasTex && tex !is null) {
+                    vec2 texSize = vec2();
+                    if (_MlBrowserTextureHasValidSize(tex, texSize)) {
+                        float availW = Math::Max(32.0f, UI::GetContentRegionAvail().x);
+                        float availH = Math::Max(32.0f, UI::GetContentRegionAvail().y);
+                        float drawW = availW;
+                        float drawH = drawW * (texSize.y / texSize.x);
+                        if (drawH > availH && drawH > 0.0f) {
+                            float scale = availH / drawH;
+                            drawH = availH;
+                            drawW *= scale;
+                        }
+                        if (drawW > availW && drawW > 0.0f) {
+                            float scale = availW / drawW;
+                            drawW = availW;
+                            drawH *= scale;
+                        }
+                        float padX = Math::Max(0.0f, (availW - drawW) * 0.5f);
+                        float padY = Math::Max(0.0f, (availH - drawH) * 0.5f);
+                        if (padY > 0.0f) UI::Dummy(vec2(0.0f, padY));
+                        if (padX > 0.0f) {
+                            UI::Dummy(vec2(padX, 0.0f));
+                            UI::SameLine();
+                        }
+                        UI::ImageWithBg(tex, vec2(drawW, drawH), vec2(0, 0), vec2(1, 1), vec4(0.20f, 0.20f, 0.20f, 1.0f), vec4(1, 1, 1, 1));
+                    } else {
+                        UI::TextDisabled("No preview");
+                    }
+                } else if (loading) {
+                    string loadLine1 = "";
+                    string loadLine2 = "";
+                    if (_MlBrowserGetLoadingInfo(entry.url, loadLine1, loadLine2)) {
+                        UI::TextDisabled(loadLine1);
+                        if (loadLine2.Length > 0) UI::TextDisabled(loadLine2);
+                    } else {
+                        UI::TextDisabled("Loading preview " + _MlBrowserPreviewLoadingFrame());
+                    }
+                } else {
+                    UI::TextDisabled(err.Length > 0 ? err : "No preview");
+                }
+            }
+            UI::EndChild();
+            bool thumbHovered = UI::IsItemHovered();
+            if (thumbHovered && UI::IsMouseClicked(UI::MouseButton::Left)) activateRequested = true;
+            tileHovered = tileHovered || thumbHovered;
+
+            string ext = _MlBrowserFileExtension(entry.url);
+            string label = _MlBrowserShortTileLabel(_MlBrowserEntryLabel(entry));
+            UI::Text(_MlBrowserFileColorCode(ext) + _MlBrowserFileIcon(ext) + "\\$z " + label);
+            bool labelHovered = UI::IsItemHovered();
+            if (labelHovered && UI::IsMouseClicked(UI::MouseButton::Left)) activateRequested = true;
+            tileHovered = tileHovered || labelHovered;
+        }
+        UI::EndChild();
+        if (tileHovered) {
+            UI::SetTooltip(entry.url);
+            UI::SetMouseCursor(UI::MouseCursor::Hand);
+        }
+        if (activateRequested) _MlBrowserSelectUrl(entry.url);
+        UI::PopID();
+    }
+
+    bool _MlBrowserRenderFolderPreviewPane() {
+        if (g_MlBrowserSelectedFolderKey.Length == 0) return false;
+
+        string folderName = g_MlBrowserSelectedFolderName.Length > 0 ? g_MlBrowserSelectedFolderName : g_MlBrowserSelectedFolderKey;
+        UI::Text("\\$cef" + Icons::FolderOpenO + "\\$z " + folderName);
+        if (UI::IsItemHovered()) UI::SetTooltip(g_MlBrowserSelectedFolderKey);
+        UI::SameLine();
+        UI::BeginDisabled(!_MlBrowserCanGoBack());
+        if (UI::Button(Icons::ArrowLeft + " Back##ml-browser-folder-back")) {
+            _MlBrowserGoBack();
+            UI::EndDisabled();
+            return true;
+        }
+        UI::EndDisabled();
+        if (UI::IsItemHovered()) UI::SetTooltip("Return to the previous browser view");
+        UI::SameLine();
+        if (UI::Button(Icons::Times + " Clear folder##ml-browser-folder-clear")) {
+            _MlBrowserClearFolderSelection();
+            return true;
+        }
+        if (UI::IsItemHovered()) UI::SetTooltip("Return to single-file preview mode");
+        UI::Separator();
+
+        array<MlBrowserEntry@> entries;
+        _MlBrowserCollectEntriesForFolderKey(g_MlBrowserSelectedFolderKey, entries);
+        if (entries.Length == 0) {
+            UI::TextDisabled("No image files found under this folder.");
+            return true;
+        }
+
+        UI::TextDisabled(Icons::FileImageO + " " + entries.Length + " files");
+        float availW = Math::Max(180.0f, UI::GetContentRegionAvail().x);
+        float spacing = 8.0f;
+        float minTileW = 180.0f;
+        int cols = Math::Max(1, int(Math::Floor((availW + spacing) / (minTileW + spacing))));
+        float tileW = Math::Floor((availW - spacing * (cols - 1)) / cols);
+        if (tileW < 144.0f) tileW = 144.0f;
+        float tileH = tileW + 34.0f;
+        float rowH = tileH + spacing;
+
+        bool gridOpen = UI::BeginChild("##ml-browser-folder-grid", vec2(0, 0), false);
+        if (gridOpen) {
+            int totalRows = int(Math::Ceil(float(entries.Length) / float(cols)));
+            float scrollY = UI::GetScrollY();
+            float viewH = Math::Max(1.0f, UI::GetWindowSize().y);
+            int firstRow = Math::Max(0, int(Math::Floor(scrollY / Math::Max(1.0f, rowH))) - 1);
+            int visibleRows = Math::Max(1, int(Math::Ceil(viewH / Math::Max(1.0f, rowH))) + 2);
+            int lastRow = Math::Min(totalRows, firstRow + visibleRows);
+
+            if (firstRow > 0) UI::Dummy(vec2(0, firstRow * rowH));
+            for (int row = firstRow; row < lastRow; ++row) {
+                int startIx = row * cols;
+                int endIx = Math::Min(int(entries.Length), startIx + cols);
+                for (int i = startIx; i < endIx; ++i) {
+                    if (i > startIx) UI::SameLine();
+                    _MlBrowserRenderFolderGridTile(entries[uint(i)], i, tileW, tileH);
+                }
+            }
+            if (lastRow < totalRows) {
+                UI::Dummy(vec2(0, (totalRows - lastRow) * rowH));
+            }
+        }
+        UI::EndChild();
+        return true;
+    }
+
     void _MlBrowserRenderPreviewPane() {
+        if (_MlBrowserRenderFolderPreviewPane()) return;
         if (g_MlBrowserSelectedUrl.Length == 0) {
             UI::TextDisabled("Select an image URL to preview it.");
             UI::TextDisabled("Browse the tree on the left, or use search to filter.");
@@ -39,6 +202,16 @@ namespace Debug {
         UI::TextWrapped(urlLabel);
         if (UI::IsItemHovered()) UI::SetTooltip(g_MlBrowserSelectedUrl);
 
+        UI::BeginDisabled(!_MlBrowserCanGoBack());
+        if (UI::Button(Icons::ArrowLeft + " Back##ml-browser-back")) {
+            _MlBrowserGoBack();
+            UI::EndDisabled();
+            return;
+        }
+        UI::EndDisabled();
+        if (UI::IsItemHovered()) UI::SetTooltip("Return to the previous browser view");
+
+        UI::SameLine();
         if (UI::Button(Icons::Clipboard + " Copy##ml-browser-copy")) IO::SetClipboard(g_MlBrowserSelectedUrl);
         if (UI::IsItemHovered()) UI::SetTooltip("Copy URL to clipboard");
 
@@ -255,6 +428,7 @@ namespace Debug {
         bool listOpen = UI::BeginChild("##ml-browser-list", vec2(float(listWidth), paneHeight), true);
         if (listOpen) {
             _MlBrowserEnsureTreeCache(filter);
+            _MlBrowserResetVisibleUrls();
             auto root = g_MlBrowserTreeCacheRoot;
 
             if (root !is null && root.children.Length > 0) {
@@ -265,6 +439,7 @@ namespace Debug {
                 if (g_MlBrowserTreeCacheTotalFiles == 0) UI::TextDisabled("No URLs found. Click Refresh to scan.");
                 else UI::TextDisabled("No entries match the current filter.");
             }
+            _MlBrowserHandleListKeyboardNavigation();
             UI::Separator();
             UI::TextDisabled(Icons::FileImageO + " " + g_MlBrowserTreeCacheShownFiles + " / " + g_MlBrowserTreeCacheTotalFiles);
             if (g_MlBrowserTreeCacheTruncated) {

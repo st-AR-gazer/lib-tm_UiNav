@@ -1,7 +1,7 @@
 class UiNav_UnloadCleanup {
     ~UiNav_UnloadCleanup() {
         UiNav::Layers::OnPluginUnload();
-        UiNav::Layers::DestroyAllOwned();
+        UiNav::Layers::DestroyAllOwnedGlobal();
     }
 }
 UiNav_UnloadCleanup g_UiNav_UnloadCleanup;

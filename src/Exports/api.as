@@ -30,6 +30,7 @@ namespace UiNav {
     import OpResult@ ReadTextEx(Target@ t) from "UiNav";
     import void PrepareTarget(Target@ t) from "UiNav";
     import void InvalidateTargetPlan(Target@ t) from "UiNav";
+    import bool ValidateRef(NodeRef@ r) from "UiNav";
 
     import bool IsEffectivelyVisible(CControlBase@ n) from "UiNav";
     import string CleanUiFormatting(const string &in s) from "UiNav";
@@ -37,7 +38,7 @@ namespace UiNav {
     import uint ContextEpoch() from "UiNav";
     import uint ContextEpochBumps() from "UiNav";
     import bool RefreshContext() from "UiNav";
-    import void InvalidateAllCaches(const string &in reason = "manual") from "UiNav";
+    import void InvalidateTargetCaches(const string &in reason = "manual") from "UiNav";
 
     import uint CacheLayerFrameMemoHits() from "UiNav";
     import uint CacheLayerFrameMemoMisses() from "UiNav";
@@ -48,12 +49,12 @@ namespace UiNav {
     import uint CacheSelectorTokenHits() from "UiNav";
     import uint CacheSelectorTokenMisses() from "UiNav";
     import uint CacheSelectorTokenEvictions() from "UiNav";
-    import uint CacheSelectorTokenSize() from "UiNav";
+    import uint SharedCacheSelectorTokenSize() from "UiNav";
     import float CacheSelectorTokenHitRate() from "UiNav";
     import uint CacheTargetPlanHits() from "UiNav";
     import uint CacheTargetPlanMisses() from "UiNav";
     import uint CacheTargetPlanRebuilds() from "UiNav";
-    import void ResetCacheMetrics() from "UiNav";
+    import void ResetCacheMetricBaselines() from "UiNav";
 
     import uint LatencySampleCount(const string &in metricName) from "UiNav";
     import float LatencyAvgMs(const string &in metricName) from "UiNav";
@@ -82,9 +83,15 @@ namespace UiNav { namespace Builder {
     import BuilderNode@ NewNode(const string &in kind = "frame") from "UiNav";
     import BuilderDocument@ ImportXml(const string &in xmlText, const string &in sourceKind = "import_xml",
         const string &in sourceLabel = "") from "UiNav";
+    import BuilderDocument@ ImportJson(const string &in jsonText, const string &in sourceKind = "import_json",
+        const string &in sourceLabel = "") from "UiNav";
     import BuilderDocument@ CloneLiveLayer(const ManiaLinkReq@ req, bool stripFrameClipping = true,
         bool centerRoots = false) from "UiNav";
     import string ExportXml(const BuilderDocument@ doc) from "UiNav";
+    import string ExportJson(const BuilderDocument@ doc) from "UiNav";
+    import bool SaveJsonToFile(const BuilderDocument@ doc, const string &in path = "") from "UiNav";
+    import BuilderDocument@ LoadJsonFromFile(const string &in path, const string &in sourceKind = "import_json_file",
+        const string &in sourceLabel = "") from "UiNav";
     import int AppendRoot(BuilderDocument@ doc, BuilderNode@ node) from "UiNav";
     import int AppendChild(BuilderDocument@ doc, int parentIx, BuilderNode@ node) from "UiNav";
     import bool DeleteNode(BuilderDocument@ doc, int nodeIx) from "UiNav";
@@ -101,6 +108,7 @@ namespace UiNav { namespace CT {
     import CControlBase@ ResolveSelector(const string &in selector, CControlBase@ start,
         ControlTreeSearchMode mode = ControlTreeSearchMode::Exact, const string &in guardStartsWith = "") from "UiNav";
     import CControlBase@ FindFirstByIdName(CControlBase@ root, const string &in idName) from "UiNav";
+    import bool ValidateRef(NodeRef@ r) from "UiNav";
     import bool IsEffectivelyVisible(CControlBase@ n) from "UiNav";
 } }
 

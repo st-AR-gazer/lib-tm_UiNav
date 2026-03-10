@@ -1632,7 +1632,7 @@ namespace Builder {
         for (uint i = 0; i < doc.nodes.Length; ++i) if (doc.nodes[i] !is null && doc.nodes[i].parentIx < 0) roots++;
 
         _DbgAppend(lines, "doc.format=" + doc.format);
-        _DbgAppend(lines, "doc.version=" + doc.version);
+        _DbgAppend(lines, "doc.schemaVersion=" + doc.schemaVersion);
         _DbgAppend(lines, "doc.name=" + doc.name);
         _DbgAppend(lines, "doc.sourceKind=" + doc.sourceKind);
         _DbgAppend(lines, "doc.sourceLabel=" + doc.sourceLabel);

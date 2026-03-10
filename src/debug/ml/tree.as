@@ -2,6 +2,14 @@ namespace UiNav {
 namespace Debug {
 
     int g_MlUnifiedSourceKind = -1;
+    int g_MlUnifiedSourceSelectPending = -1;
+
+    bool _MlSourceKindAvailable(int kind, bool hasPlayground, bool hasMenu, bool hasEditor) {
+        if (kind == 0) return hasPlayground;
+        if (kind == 1) return hasMenu;
+        if (kind == 2) return hasEditor;
+        return false;
+    }
 
     int _MlFirstAvailableSourceKind(bool hasPlayground, bool hasMenu, bool hasEditor) {
         if (hasPlayground) return 0;
@@ -10,12 +18,28 @@ namespace Debug {
         return -1;
     }
 
+    int _MlPreferredSourceKind(bool hasPlayground, bool hasMenu, bool hasEditor) {
+        if (hasEditor) {
+            auto editor = _GetMlEditorCommon();
+            if (editor !is null && editor.PluginMapType !is null) return 2;
+        }
+
+        auto current = UiNav::Layers::GetManiaApp();
+        if (current !is null) {
+            auto menu = UiNav::Layers::GetManiaAppMenu();
+            if (hasMenu && menu !is null && current is menu) return 1;
+
+            auto playground = UiNav::Layers::GetManiaAppPlayground();
+            if (hasPlayground && playground !is null && current is playground) return 0;
+        }
+
+        return _MlFirstAvailableSourceKind(hasPlayground, hasMenu, hasEditor);
+    }
+
     void _EnsureMlUnifiedSourceKind(bool hasPlayground, bool hasMenu, bool hasEditor) {
-        bool valid = (g_MlUnifiedSourceKind == 0 && hasPlayground)
-            || (g_MlUnifiedSourceKind == 1 && hasMenu)
-            || (g_MlUnifiedSourceKind == 2 && hasEditor);
-        if (valid) return;
-        g_MlUnifiedSourceKind = _MlFirstAvailableSourceKind(hasPlayground, hasMenu, hasEditor);
+        if (_MlSourceKindAvailable(g_MlUnifiedSourceKind, hasPlayground, hasMenu, hasEditor)) return;
+        g_MlUnifiedSourceKind = _MlPreferredSourceKind(hasPlayground, hasMenu, hasEditor);
+        g_MlUnifiedSourceSelectPending = g_MlUnifiedSourceKind;
     }
 
     void _RenderMlUnifiedSourceTabs(bool hasPlayground, bool hasMenu, bool hasEditor) {
@@ -23,8 +47,10 @@ namespace Debug {
 
         UI::BeginTabBar("##ml-source-tabs");
         if (hasPlayground) {
-            if (UI::BeginTabItem("Playground")) {
+            int flags = g_MlUnifiedSourceSelectPending == 0 ? UI::TabItemFlags::SetSelected : UI::TabItemFlags::None;
+            if (UI::BeginTabItem("Playground", flags)) {
                 g_MlUnifiedSourceKind = 0;
+                if (g_MlUnifiedSourceSelectPending == 0) g_MlUnifiedSourceSelectPending = -1;
                 _RenderMlTreePane(0);
                 UI::EndTabItem();
             }
@@ -36,8 +62,10 @@ namespace Debug {
         }
 
         if (hasMenu) {
-            if (UI::BeginTabItem("Menu")) {
+            int flags = g_MlUnifiedSourceSelectPending == 1 ? UI::TabItemFlags::SetSelected : UI::TabItemFlags::None;
+            if (UI::BeginTabItem("Menu", flags)) {
                 g_MlUnifiedSourceKind = 1;
+                if (g_MlUnifiedSourceSelectPending == 1) g_MlUnifiedSourceSelectPending = -1;
                 _RenderMlTreePane(1);
                 UI::EndTabItem();
             }
@@ -49,8 +77,10 @@ namespace Debug {
         }
 
         if (hasEditor) {
-            if (UI::BeginTabItem("Editor")) {
+            int flags = g_MlUnifiedSourceSelectPending == 2 ? UI::TabItemFlags::SetSelected : UI::TabItemFlags::None;
+            if (UI::BeginTabItem("Editor", flags)) {
                 g_MlUnifiedSourceKind = 2;
+                if (g_MlUnifiedSourceSelectPending == 2) g_MlUnifiedSourceSelectPending = -1;
                 _RenderMlTreePane(2);
                 UI::EndTabItem();
             }
@@ -82,6 +112,7 @@ namespace Debug {
 
     void _RenderMlTreePane(int appKind) {
         g_MlActiveAppKind = appKind;
+        UI::SetNextItemWidth(440.0f);
         g_MlSearch = UI::InputText("Search", g_MlSearch);
         UI::SameLine();
         if (UI::Button("Clear##ml-search")) g_MlSearch = "";

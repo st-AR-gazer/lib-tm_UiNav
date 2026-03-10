@@ -57,6 +57,40 @@ namespace Builder {
         _RefreshPreviewForBoundsOverlayToggle();
     }
 
+    void _RenderSelectorCaptureOverlay() {
+        if (!g_SelectorArmed || g_SelectorWaitMouseRelease) return;
+
+        int flags = UI::WindowFlags::NoTitleBar
+            | UI::WindowFlags::NoResize
+            | UI::WindowFlags::NoMove
+            | UI::WindowFlags::NoScrollbar
+            | UI::WindowFlags::NoScrollWithMouse
+            | UI::WindowFlags::NoCollapse
+            | UI::WindowFlags::NoSavedSettings;
+
+        UI::SetNextWindowPos(0, 0, UI::Cond::Always);
+        UI::SetNextWindowSize(int(Display::GetWidth()), int(Display::GetHeight()), UI::Cond::Always);
+        UI::PushStyleColor(UI::Col::WindowBg, vec4(0.0f, 0.0f, 0.0f, 0.0f));
+        UI::PushStyleColor(UI::Col::Border, vec4(0.0f, 0.0f, 0.0f, 0.0f));
+        bool open = UI::Begin("##builder-selector-capture-overlay", flags);
+        if (open) {
+            UI::SetCursorPos(vec2());
+            UI::InvisibleButton("##builder-selector-capture-btn", vec2(float(Display::GetWidth()), float(Display::GetHeight())));
+            if (UI::IsItemHovered()) {
+                UI::SetMouseCursor(UI::MouseCursor::Hand);
+                UI::SetTooltip("Left-click to pick this UI area.\nRight-click to cancel picker.");
+            }
+            if (UI::IsItemClicked(UI::MouseButton::Left)) {
+                SelectorPickNow();
+                if (!S_SelectorStayArmed) SelectorDisarmPicker(true);
+            } else if (UI::IsItemClicked(UI::MouseButton::Right)) {
+                SelectorDisarmPicker();
+            }
+        }
+        UI::End();
+        UI::PopStyleColor(2);
+    }
+
     string _EditStringField(const string &in label, const string &in field, const string &in status) {
         string v = UI::InputText(label, field);
         if (v != field) {
@@ -1135,9 +1169,6 @@ namespace Builder {
 
     void _RenderSelectorView() {
         if (UI::BeginChild("##builder-selector-scroll", vec2(0, 0), false)) {
-            UI::TextWrapped("Pick live UI elements by clicking on screen. This uses runtime bounds (abs pos/size/align) and can sync directly to ManiaLink UI selection.");
-            UI::TextDisabled("Tip: keep this tab open, arm the picker, then click your target element.");
-
             if (!g_SelectorArmed) {
                 if (UI::Button(Icons::Crosshairs + " Arm Picker##bv-selector-arm")) {
                     SelectorArmPicker();
@@ -1181,12 +1212,6 @@ namespace Builder {
             if (g_SelectorArmed) {
                 if (g_SelectorWaitMouseRelease) {
                     if (!UI::IsMouseDown(UI::MouseButton::Left)) g_SelectorWaitMouseRelease = false;
-                } else {
-                    bool clickInWorld = !UI::WantCaptureMouse();
-                    if (clickInWorld && UI::IsMouseClicked(UI::MouseButton::Left)) {
-                        SelectorPickNow();
-                        if (!S_SelectorStayArmed) SelectorDisarmPicker(true);
-                    }
                 }
             }
 
@@ -1321,6 +1346,8 @@ namespace Builder {
             }
         }
         UI::EndChild();
+
+        _RenderSelectorCaptureOverlay();
     }
 
 

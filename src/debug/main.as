@@ -73,6 +73,9 @@ namespace Debug {
         uint scanIx = 0;
         bool complete = false;
         array<int> rootIxs;
+        uint hiddenNoiseRoots = 0;
+        uint hiddenDuplicateRoots = 0;
+        dictionary anonRootSignatures;
     }
 
     Mode g_Mode = Mode::ML;
@@ -199,6 +202,9 @@ namespace Debug {
 
     [Setting hidden name="UiNav debug ControlTree hide empty roots"]
     bool S_ControlTreeHideEmptyRoots = true;
+
+    [Setting hidden name="UiNav debug ControlTree hide duplicate anonymous roots"]
+    bool S_ControlTreeHideDuplicateAnonymousRoots = true;
 
     [Setting hidden name="UiNav debug ControlTree overlay root scan budget"]
     uint S_ControlTreeOverlayRootScanBudget = 2048;
@@ -435,145 +441,157 @@ namespace Debug {
         }
     }
 
-    void _RenderDiagnosticsPanel() {
-        string bcIndicator = S_DiagBreadcrumbFile
-            ? "  \\$9fd" + Icons::Play + "\\$z"
-            : "  \\$888" + Icons::Stop + "\\$z";
-        UI::SetNextItemOpen(true, UI::Cond::Appearing);
-        if (UI::CollapsingHeader(Icons::Wrench + " Crash Breadcrumbs" + bcIndicator + "##diag-bc")) {
-            S_DiagBreadcrumbFile = UI::Checkbox("Enabled##diag-bc", S_DiagBreadcrumbFile);
-            if (UI::IsItemHovered()) UI::SetTooltip("Write last-known step to a file for post-crash analysis");
+    void _RenderDiagnosticsBreadcrumbsTab() {
+        S_DiagBreadcrumbFile = UI::Checkbox("Enabled##diag-bc", S_DiagBreadcrumbFile);
+        if (UI::IsItemHovered()) UI::SetTooltip("Write last-known step to a file for post-crash analysis");
 
-            UI::SetNextItemWidth(UI::GetContentRegionAvail().x - 38.0f);
-            S_DiagBreadcrumbPath = UI::InputText("##diag-bc-path", S_DiagBreadcrumbPath);
-            if (UI::IsItemHovered()) UI::SetTooltip(S_DiagBreadcrumbPath);
-            UI::SameLine();
-            if (UI::Button(Icons::FolderOpenO + "##diag-bc-open")) {
-                string folder = Path::GetDirectoryName(S_DiagBreadcrumbPath);
-                if (folder.Length == 0) folder = IO::FromStorageFolder("Diagnostics");
-                _IO::OpenFolder(folder, true);
-            }
-            if (UI::IsItemHovered()) UI::SetTooltip("Open breadcrumb folder");
-
-            UI::SetNextItemWidth(120.0f);
-            int bcThrottle = int(S_DiagBreadcrumbThrottleMs);
-            bcThrottle = UI::InputInt("Throttle (ms)##diag-bc", bcThrottle);
-            if (bcThrottle < 0) bcThrottle = 0;
-            S_DiagBreadcrumbThrottleMs = uint(bcThrottle);
-
-            if (g_DiagBreadcrumbLastStep.Length > 0) {
-                string lastInfo = "\\$bff" + Icons::ChevronRight + "\\$z " + g_DiagBreadcrumbLastStep;
-                if (g_DiagBreadcrumbLastFn.Length > 0) lastInfo += "  \\$888(" + g_DiagBreadcrumbLastFn + ")\\$z";
-                UI::Text(lastInfo);
-            } else {
-                UI::TextDisabled("No breadcrumb step recorded yet.");
-            }
+        UI::SetNextItemWidth((UI::GetContentRegionAvail().x - 38.0f) * 0.5f);
+        S_DiagBreadcrumbPath = UI::InputText("##diag-bc-path", S_DiagBreadcrumbPath);
+        if (UI::IsItemHovered()) UI::SetTooltip(S_DiagBreadcrumbPath);
+        UI::SameLine();
+        if (UI::Button(Icons::FolderOpenO + "##diag-bc-open")) {
+            string folder = Path::GetDirectoryName(S_DiagBreadcrumbPath);
+            if (folder.Length == 0) folder = IO::FromStorageFolder("Diagnostics");
+            _IO::OpenFolder(folder, true);
         }
+        if (UI::IsItemHovered()) UI::SetTooltip("Open breadcrumb folder");
 
-        string trCountLabel = "  \\$888[" + UiNav::Trace::g_Buf.Length + "/" + UiNav::Trace::S_MaxEntries + "]\\$z";
-        string trIndicator = UiNav::Trace::Enabled()
-            ? "  \\$9fd" + Icons::Play + "\\$z"
-            : "  \\$888" + Icons::Stop + "\\$z";
-        UI::SetNextItemOpen(true, UI::Cond::Appearing);
-        if (UI::CollapsingHeader(Icons::Refresh + " Trace Ring Buffer" + trIndicator + trCountLabel + "##diag-tr")) {
-            UiNav::Trace::S_Enabled = UI::Checkbox("Enabled##diag-tr", UiNav::Trace::S_Enabled);
-            UI::SameLine();
-            UI::SetNextItemWidth(120.0f);
-            int trMax = int(UiNav::Trace::S_MaxEntries);
-            trMax = UI::InputInt("Max entries##diag-tr", trMax);
-            if (trMax < 0) trMax = 0;
-            UiNav::Trace::S_MaxEntries = uint(trMax);
+        UI::SetNextItemWidth(120.0f);
+        int bcThrottle = int(S_DiagBreadcrumbThrottleMs);
+        bcThrottle = UI::InputInt("Throttle (ms)##diag-bc", bcThrottle);
+        if (bcThrottle < 0) bcThrottle = 0;
+        S_DiagBreadcrumbThrottleMs = uint(bcThrottle);
 
-            if (UI::Button(Icons::Play + " Dump##diag-tr")) UiNav::Trace::DumpToLog();
-            if (UI::IsItemHovered()) UI::SetTooltip("Dump trace entries to Openplanet log");
-            UI::SameLine();
-            if (UI::Button(Icons::TrashO + " Clear##diag-tr")) UiNav::Trace::Clear();
-            if (UI::IsItemHovered()) UI::SetTooltip("Clear all trace entries");
-            UI::SameLine();
-            if (UI::Button(Icons::Clipboard + " Copy##diag-tr")) {
-                string traceText = "";
-                uint trN = UiNav::Trace::g_Buf.Length;
-                if (trN > 0) {
-                    if (!UiNav::Trace::g_Filled) {
-                        for (uint ti = 0; ti < trN; ++ti) {
-                            auto te = UiNav::Trace::g_Buf[ti];
-                            if (te !is null) traceText += tostring(te.ms) + " " + te.msg + "\n";
-                        }
-                    } else {
-                        for (uint ti = 0; ti < trN; ++ti) {
-                            uint tix = (UiNav::Trace::g_NextIx + ti) % trN;
-                            auto te = UiNav::Trace::g_Buf[tix];
-                            if (te !is null) traceText += tostring(te.ms) + " " + te.msg + "\n";
-                        }
-                    }
-                }
-                IO::SetClipboard(traceText.Length > 0 ? traceText : "(empty trace)");
-            }
-            if (UI::IsItemHovered()) UI::SetTooltip("Copy trace buffer to clipboard");
+        if (g_DiagBreadcrumbLastStep.Length > 0) {
+            string lastInfo = "\\$bff" + Icons::ChevronRight + "\\$z " + g_DiagBreadcrumbLastStep;
+            if (g_DiagBreadcrumbLastFn.Length > 0) lastInfo += "  \\$888(" + g_DiagBreadcrumbLastFn + ")\\$z";
+            UI::Text(lastInfo);
+        } else {
+            UI::TextDisabled("No breadcrumb step recorded yet.");
+        }
+    }
 
-            float trViewH = 180.0f;
-            if (UI::BeginChild("##diag-tr-viewer", vec2(0, trViewH), true)) {
-                uint trN = UiNav::Trace::g_Buf.Length;
-                if (trN == 0) {
-                    UI::TextDisabled("Trace is empty.");
-                    UI::TextDisabled("Enable trace and interact with UiNav to populate.");
-                } else if (!UiNav::Trace::g_Filled) {
+    void _RenderDiagnosticsTraceTab() {
+        UiNav::Trace::S_Enabled = UI::Checkbox("Enabled##diag-tr", UiNav::Trace::S_Enabled);
+        UI::SameLine();
+        UI::SetNextItemWidth(120.0f);
+        int trMax = int(UiNav::Trace::S_MaxEntries);
+        trMax = UI::InputInt("Max entries##diag-tr", trMax);
+        if (trMax < 0) trMax = 0;
+        UiNav::Trace::S_MaxEntries = uint(trMax);
+
+        if (UI::Button(Icons::Play + " Dump##diag-tr")) UiNav::Trace::DumpToLog();
+        if (UI::IsItemHovered()) UI::SetTooltip("Dump trace entries to Openplanet log");
+        UI::SameLine();
+        if (UI::Button(Icons::TrashO + " Clear##diag-tr")) UiNav::Trace::Clear();
+        if (UI::IsItemHovered()) UI::SetTooltip("Clear all trace entries");
+        UI::SameLine();
+        if (UI::Button(Icons::Clipboard + " Copy##diag-tr")) {
+            string traceText = "";
+            uint trN = UiNav::Trace::g_Buf.Length;
+            if (trN > 0) {
+                if (!UiNav::Trace::g_Filled) {
                     for (uint ti = 0; ti < trN; ++ti) {
                         auto te = UiNav::Trace::g_Buf[ti];
-                        if (te is null) continue;
-                        UI::Text("\\$888" + tostring(te.ms) + "\\$z " + te.msg);
+                        if (te !is null) traceText += tostring(te.ms) + " " + te.msg + "\n";
                     }
                 } else {
                     for (uint ti = 0; ti < trN; ++ti) {
                         uint tix = (UiNav::Trace::g_NextIx + ti) % trN;
                         auto te = UiNav::Trace::g_Buf[tix];
-                        if (te is null) continue;
-                        UI::Text("\\$888" + tostring(te.ms) + "\\$z " + te.msg);
+                        if (te !is null) traceText += tostring(te.ms) + " " + te.msg + "\n";
                     }
                 }
             }
-            UI::EndChild();
+            IO::SetClipboard(traceText.Length > 0 ? traceText : "(empty trace)");
         }
+        if (UI::IsItemHovered()) UI::SetTooltip("Copy trace buffer to clipboard");
 
-        string slIndicator = S_DiagStepLogs
-            ? "  \\$9fd" + Icons::Play + "\\$z"
-            : "  \\$888" + Icons::Stop + "\\$z";
-        UI::SetNextItemOpen(false, UI::Cond::Appearing);
-        if (UI::CollapsingHeader(Icons::Cog + " Step Logging" + slIndicator + "##diag-sl")) {
-            S_DiagStepLogs = UI::Checkbox("Enable step logs##diag-sl", S_DiagStepLogs);
-            if (UI::IsItemHovered()) UI::SetTooltip("Log per-operation diagnostic steps to Openplanet log");
-            UI::SameLine();
-            S_DiagVerbose = UI::Checkbox("Verbose##diag-sl", S_DiagVerbose);
-            if (UI::IsItemHovered()) UI::SetTooltip("Include all verbose steps (very spammy!)");
-            UI::TextDisabled("Step logs write per-operation entries to the Openplanet log.");
-            if (S_DiagVerbose) {
-                UI::Text("\\$fa0" + Icons::ExclamationTriangle + " Verbose mode active \\$888- expect heavy log output.\\$z");
+        float trViewH = 180.0f;
+        if (UI::BeginChild("##diag-tr-viewer", vec2(0, trViewH), true)) {
+            uint trN = UiNav::Trace::g_Buf.Length;
+            if (trN == 0) {
+                UI::TextDisabled("Trace is empty.");
+                UI::TextDisabled("Enable trace and interact with UiNav to populate.");
+            } else if (!UiNav::Trace::g_Filled) {
+                for (uint ti = 0; ti < trN; ++ti) {
+                    auto te = UiNav::Trace::g_Buf[ti];
+                    if (te is null) continue;
+                    UI::Text("\\$888" + tostring(te.ms) + "\\$z " + te.msg);
+                }
+            } else {
+                for (uint ti = 0; ti < trN; ++ti) {
+                    uint tix = (UiNav::Trace::g_NextIx + ti) % trN;
+                    auto te = UiNav::Trace::g_Buf[tix];
+                    if (te is null) continue;
+                    UI::Text("\\$888" + tostring(te.ms) + "\\$z " + te.msg);
+                }
             }
         }
+        UI::EndChild();
+    }
 
-        UI::SetNextItemOpen(false, UI::Cond::Appearing);
-        if (UI::CollapsingHeader(Icons::Exchange + " Request Pump Policy##diag-rp")) {
-            int policy = UiNav::Dump::GetRequestPumpPolicy();
-            const string[] policyLabels = {"Disabled", "Dev-only", "Always"};
-            const string[] policyColors = {"\\$888", "\\$fd8", "\\$9fd"};
-
-            UI::SetNextItemWidth(200.0f);
-            policy = UI::SliderInt("##diag-rp-slider", policy, 0, 2);
-            UiNav::Dump::SetRequestPumpPolicy(policy);
-            if (policy >= 0 && policy < int(policyLabels.Length)) {
-                UI::SameLine();
-                UI::Text(policyColors[policy] + policyLabels[policy] + "\\$z");
-            }
-
-            bool pumpActive = UiNav::Dump::RequestPumpEnabledNow();
-            UI::Text("Pump: " + (pumpActive
-                ? "\\$9fd" + Icons::Play + " Active\\$z"
-                : "\\$888" + Icons::Stop + " Inactive\\$z"));
+    void _RenderDiagnosticsStepLogsTab() {
+        S_DiagStepLogs = UI::Checkbox("Enable step logs##diag-sl", S_DiagStepLogs);
+        if (UI::IsItemHovered()) UI::SetTooltip("Log per-operation diagnostic steps to Openplanet log");
+        UI::SameLine();
+        S_DiagVerbose = UI::Checkbox("Verbose##diag-sl", S_DiagVerbose);
+        if (UI::IsItemHovered()) UI::SetTooltip("Include all verbose steps (very spammy!)");
+        UI::TextDisabled("Step logs write per-operation entries to the Openplanet log.");
+        if (S_DiagVerbose) {
+            UI::Text("\\$fa0" + Icons::ExclamationTriangle + " Verbose mode active \\$888- expect heavy log output.\\$z");
         }
     }
 
+    void _RenderDiagnosticsRequestPumpTab() {
+        int policy = UiNav::Dump::GetRequestPumpPolicy();
+        const string[] policyLabels = {"Disabled", "Dev-only", "Always"};
+        const string[] policyColors = {"\\$888", "\\$fd8", "\\$9fd"};
+
+        UI::SetNextItemWidth(200.0f);
+        policy = UI::SliderInt("##diag-rp-slider", policy, 0, 2);
+        UiNav::Dump::SetRequestPumpPolicy(policy);
+        if (policy >= 0 && policy < int(policyLabels.Length)) {
+            UI::SameLine();
+            UI::Text(policyColors[policy] + policyLabels[policy] + "\\$z");
+        }
+
+        bool pumpActive = UiNav::Dump::RequestPumpEnabledNow();
+        UI::Text("Pump: " + (pumpActive
+            ? "\\$9fd" + Icons::Play + " Active\\$z"
+            : "\\$888" + Icons::Stop + " Inactive\\$z"));
+    }
+
+    void _RenderDiagnosticsPanel() {
+        string bcIndicator = S_DiagBreadcrumbFile
+            ? " \\$9fd" + Icons::Play + "\\$z"
+            : " \\$888" + Icons::Stop + "\\$z";
+        string trCountLabel = " \\$888[" + UiNav::Trace::g_Buf.Length + "/" + UiNav::Trace::S_MaxEntries + "]\\$z";
+        string trIndicator = UiNav::Trace::Enabled()
+            ? " \\$9fd" + Icons::Play + "\\$z"
+            : " \\$888" + Icons::Stop + "\\$z";
+        string slIndicator = S_DiagStepLogs
+            ? " \\$9fd" + Icons::Play + "\\$z"
+            : " \\$888" + Icons::Stop + "\\$z";
+
+        UI::Text(Icons::Wrench + " Crash Breadcrumbs" + bcIndicator);
+        _RenderDiagnosticsBreadcrumbsTab();
+        UI::Separator();
+
+        UI::Text(Icons::Refresh + " Trace Ring Buffer" + trIndicator + trCountLabel);
+        _RenderDiagnosticsTraceTab();
+        UI::Separator();
+
+        UI::Text(Icons::Cog + " Step Logging" + slIndicator);
+        _RenderDiagnosticsStepLogsTab();
+        UI::Separator();
+
+        UI::Text(Icons::Exchange + " Request Pump Policy");
+        _RenderDiagnosticsRequestPumpTab();
+    }
+
     void _DestroyAllUiNavOwnedLayersNow() {
-        UiNav::Layers::DestroyAllOwned();
+        UiNav::Layers::DestroyAllOwnedGlobal();
         uint swept = UiNav::Layers::LastDestroyAllOwnedSweepCount();
         g_UiNavOwnedLayerCleanupStatus = "Destroyed all UiNav-owned layers (registry + prefix sweep: " + swept + ").";
         UI::ShowNotification("UiNav", g_UiNavOwnedLayerCleanupStatus, 4500);

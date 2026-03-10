@@ -373,6 +373,9 @@ namespace Debug {
         g_MlBrowserStatus = "Loaded " + g_MlBrowserEntries.Length + " URLs (live=" + addedLive + ", fids=" + addedNadeoFids + ", fs=" + addedFs + ").";
         if (suffix.Length > 0) g_MlBrowserStatus += " " + suffix;
         _MlBrowserInvalidateTreeCache();
+        _MlBrowserInvalidateThumbCache();
+        g_MlBrowserHistory.Resize(0);
+        _MlBrowserClearFolderSelection();
         _MlBrowserResetPreview();
     }
 
@@ -511,6 +514,136 @@ namespace Debug {
         g_MlBrowserTreeCacheDirty = true;
     }
 
+    void _MlBrowserInvalidateThumbCache() {
+        g_MlBrowserThumbTextureCache.DeleteAll();
+        g_MlBrowserThumbErrorCache.DeleteAll();
+        g_MlBrowserThumbCacheKeys.Resize(0);
+    }
+
+    bool _MlBrowserTryConsumeThumbBudget() {
+        const uint kWindowMs = 16;
+        const uint kBudgetPerWindow = 2;
+        uint now = Time::Now;
+        if (g_MlBrowserThumbBudgetWindowStartedMs == 0 || (now - g_MlBrowserThumbBudgetWindowStartedMs) >= kWindowMs) {
+            g_MlBrowserThumbBudgetWindowStartedMs = now;
+            g_MlBrowserThumbBudgetConsumed = 0;
+        }
+        if (g_MlBrowserThumbBudgetConsumed >= kBudgetPerWindow) return false;
+        g_MlBrowserThumbBudgetConsumed++;
+        return true;
+    }
+
+    int _MlBrowserFindQueuedConversionIx(const string &in url, const string &in rawPath = "") {
+        string u = _MlBrowserNormalizeUrl(url);
+        string raw = rawPath.Trim();
+        if (u.Length == 0) return -1;
+        for (uint i = 0; i < g_MlBrowserConvertQueueUrls.Length; ++i) {
+            if (g_MlBrowserConvertQueueUrls[i] != u) continue;
+            if (raw.Length == 0 || g_MlBrowserConvertQueueRawPaths[i] == raw) return int(i);
+        }
+        return -1;
+    }
+
+    void _MlBrowserEnqueueConversion(const string &in url, const string &in rawPath) {
+        if (url.Length == 0 || rawPath.Length == 0) return;
+        if (_MlBrowserFindQueuedConversionIx(url, rawPath) >= 0) return;
+        const uint kMaxQueue = 16;
+        if (g_MlBrowserConvertQueueUrls.Length >= kMaxQueue) return;
+        g_MlBrowserConvertQueueUrls.InsertLast(url);
+        g_MlBrowserConvertQueueRawPaths.InsertLast(rawPath);
+        g_MlBrowserConvertQueueQueuedAtMs.InsertLast(Time::Now);
+    }
+
+    bool _MlBrowserPopNextQueuedConversion(string &out url, string &out rawPath, uint &out queuedAtMs) {
+        url = "";
+        rawPath = "";
+        queuedAtMs = 0;
+        if (g_MlBrowserConvertQueueUrls.Length == 0) return false;
+
+        url = g_MlBrowserConvertQueueUrls[0];
+        rawPath = g_MlBrowserConvertQueueRawPaths[0];
+        queuedAtMs = g_MlBrowserConvertQueueQueuedAtMs[0];
+        g_MlBrowserConvertQueueUrls.RemoveAt(0);
+        g_MlBrowserConvertQueueRawPaths.RemoveAt(0);
+        g_MlBrowserConvertQueueQueuedAtMs.RemoveAt(0);
+        return true;
+    }
+
+    void _MlBrowserClearActiveConversion() {
+        g_MlBrowserConvertJobRunning = false;
+        g_MlBrowserConvertJobUrl = "";
+        g_MlBrowserConvertJobRawPath = "";
+        g_MlBrowserConvertJobQueuedAtMs = 0;
+        g_MlBrowserConvertJobStartedMs = 0;
+    }
+
+    void _MlBrowserStartActiveConversion(const string &in url, const string &in rawPath, uint queuedAtMs) {
+        g_MlBrowserConvertJobRunning = true;
+        g_MlBrowserConvertJobUrl = url;
+        g_MlBrowserConvertJobRawPath = rawPath;
+        g_MlBrowserConvertJobQueuedAtMs = queuedAtMs;
+        g_MlBrowserConvertJobStartedMs = Time::Now;
+    }
+
+    int _MlBrowserConversionQueuePosition(const string &in rawUrl) {
+        string url = _MlBrowserNormalizeUrl(rawUrl);
+        if (url.Length == 0) return -1;
+        if (g_MlBrowserConvertJobRunning && g_MlBrowserConvertJobUrl == url) return 0;
+        int queuedIx = _MlBrowserFindQueuedConversionIx(url);
+        if (queuedIx < 0) return -1;
+        return queuedIx + 1;
+    }
+
+    uint _MlBrowserConversionQueuedMs(const string &in rawUrl) {
+        string url = _MlBrowserNormalizeUrl(rawUrl);
+        if (url.Length == 0) return 0;
+        if (g_MlBrowserConvertJobRunning && g_MlBrowserConvertJobUrl == url) {
+            if (g_MlBrowserConvertJobStartedMs >= g_MlBrowserConvertJobQueuedAtMs) {
+                return g_MlBrowserConvertJobStartedMs - g_MlBrowserConvertJobQueuedAtMs;
+            }
+            return 0;
+        }
+        int queuedIx = _MlBrowserFindQueuedConversionIx(url);
+        if (queuedIx < 0) return 0;
+        return Time::Now - g_MlBrowserConvertQueueQueuedAtMs[uint(queuedIx)];
+    }
+
+    uint _MlBrowserConversionDecodeMs(const string &in rawUrl) {
+        string url = _MlBrowserNormalizeUrl(rawUrl);
+        if (url.Length == 0) return 0;
+        if (!(g_MlBrowserConvertJobRunning && g_MlBrowserConvertJobUrl == url)) return 0;
+        return Time::Now - g_MlBrowserConvertJobStartedMs;
+    }
+
+    string _MlBrowserShortElapsed(uint elapsedMs) {
+        if (elapsedMs < 1000) return elapsedMs + "ms";
+        uint sec = elapsedMs / 1000;
+        return sec + "s";
+    }
+
+    bool _MlBrowserGetLoadingInfo(const string &in rawUrl, string &out line1, string &out line2) {
+        line1 = "";
+        line2 = "";
+
+        string url = _MlBrowserNormalizeUrl(rawUrl);
+        if (url.Length == 0) return false;
+
+        int queuePos = _MlBrowserConversionQueuePosition(url);
+        if (queuePos < 0) return false;
+
+        line1 = "Loading preview " + _MlBrowserPreviewLoadingFrame();
+        if (queuePos == 0) {
+            uint decodeMs = _MlBrowserConversionDecodeMs(url);
+            uint queuedMs = _MlBrowserConversionQueuedMs(url);
+            line2 = "Dec " + _MlBrowserShortElapsed(decodeMs);
+            if (queuedMs > 0) line2 += " | Q " + _MlBrowserShortElapsed(queuedMs);
+        } else {
+            uint queuedMs = _MlBrowserConversionQueuedMs(url);
+            line2 = "Q #" + queuePos + " | " + _MlBrowserShortElapsed(queuedMs);
+        }
+        return true;
+    }
+
     void _MlBrowserEnsureTreeCache(const string &in filterLower) {
         bool needsRebuild = g_MlBrowserTreeCacheDirty
             || g_MlBrowserTreeCacheRoot is null
@@ -537,12 +670,272 @@ namespace Debug {
         g_MlBrowserTreeLastBuildMs = now;
     }
 
+    void _MlBrowserResetVisibleUrls() {
+        g_MlBrowserVisibleUrls.Resize(0);
+    }
+
+    void _MlBrowserMoveSelection(int delta) {
+        if (delta == 0 || g_MlBrowserVisibleUrls.Length == 0) return;
+
+        string selected = _MlBrowserNormalizeUrl(g_MlBrowserSelectedUrl);
+        int selectedIx = -1;
+        for (uint i = 0; i < g_MlBrowserVisibleUrls.Length; ++i) {
+            if (g_MlBrowserVisibleUrls[i] == selected) {
+                selectedIx = int(i);
+                break;
+            }
+        }
+
+        int nextIx = selectedIx;
+        if (nextIx < 0) {
+            nextIx = delta > 0 ? 0 : int(g_MlBrowserVisibleUrls.Length) - 1;
+        } else {
+            nextIx += delta;
+            if (nextIx < 0) nextIx = 0;
+            if (nextIx >= int(g_MlBrowserVisibleUrls.Length)) nextIx = int(g_MlBrowserVisibleUrls.Length) - 1;
+        }
+
+        if (nextIx < 0 || nextIx >= int(g_MlBrowserVisibleUrls.Length)) return;
+        string nextUrl = g_MlBrowserVisibleUrls[uint(nextIx)];
+        if (nextUrl.Length == 0) return;
+
+        g_MlBrowserScrollToSelection = true;
+        _MlBrowserSelectUrl(nextUrl);
+    }
+
+    void _MlBrowserHandleListKeyboardNavigation() {
+        if (!UI::IsWindowFocused()) return;
+        if (g_MlBrowserVisibleUrls.Length == 0) return;
+
+        if (UI::IsKeyPressed(UI::Key::DownArrow)) {
+            _MlBrowserMoveSelection(1);
+        } else if (UI::IsKeyPressed(UI::Key::UpArrow)) {
+            _MlBrowserMoveSelection(-1);
+        }
+    }
+
+    void _MlBrowserClearFolderSelection() {
+        g_MlBrowserSelectedFolderKey = "";
+        g_MlBrowserSelectedFolderName = "";
+    }
+
+    void _MlBrowserPushHistory() {
+        MlBrowserHistoryEntry@ entry = MlBrowserHistoryEntry();
+        entry.url = g_MlBrowserSelectedUrl;
+        entry.folderKey = g_MlBrowserSelectedFolderKey;
+        entry.folderName = g_MlBrowserSelectedFolderName;
+        g_MlBrowserHistory.InsertLast(entry);
+        const uint kMaxHistory = 64;
+        if (g_MlBrowserHistory.Length > kMaxHistory) g_MlBrowserHistory.RemoveAt(0);
+    }
+
+    bool _MlBrowserCanGoBack() {
+        return g_MlBrowserHistory.Length > 0;
+    }
+
+    bool _MlBrowserGoBack() {
+        if (g_MlBrowserHistory.Length == 0) return false;
+        auto entry = g_MlBrowserHistory[g_MlBrowserHistory.Length - 1];
+        g_MlBrowserHistory.RemoveAt(g_MlBrowserHistory.Length - 1);
+        if (entry is null) return false;
+
+        g_MlBrowserSelectedUrl = entry.url;
+        g_MlBrowserSelectedFolderKey = entry.folderKey;
+        g_MlBrowserSelectedFolderName = entry.folderName;
+        _MlBrowserResetPreview();
+        if (g_MlBrowserSelectedUrl.Length > 0) {
+            g_MlBrowserLoadPreviewRequested = S_MlBrowserAutoPreview;
+        }
+        return true;
+    }
+
+    void _MlBrowserSelectFolder(const string &in key, const string &in name) {
+        string folderKey = key.Trim();
+        if (folderKey.Length == 0) return;
+        if (g_MlBrowserSelectedFolderKey == folderKey) return;
+        _MlBrowserPushHistory();
+        g_MlBrowserSelectedFolderKey = folderKey;
+        g_MlBrowserSelectedFolderName = name;
+        g_MlBrowserSelectedUrl = "";
+        _MlBrowserResetPreview();
+    }
+
+    MlBrowserTreeNode@ _MlBrowserFindTreeNodeByKey(MlBrowserTreeNode@ node, const string &in key) {
+        if (node is null || key.Length == 0) return null;
+        if (node.key == key) return node;
+        for (uint i = 0; i < node.children.Length; ++i) {
+            auto found = _MlBrowserFindTreeNodeByKey(node.children[i], key);
+            if (found !is null) return found;
+        }
+        return null;
+    }
+
+    void _MlBrowserCollectFolderEntriesRec(MlBrowserTreeNode@ node, array<MlBrowserEntry@> &out entries) {
+        if (node is null) return;
+        if (node.isFile) {
+            if (node.entry !is null) entries.InsertLast(node.entry);
+            return;
+        }
+        for (uint i = 0; i < node.children.Length; ++i) {
+            _MlBrowserCollectFolderEntriesRec(node.children[i], entries);
+        }
+    }
+
+    void _MlBrowserCollectEntriesForFolderKey(const string &in folderKeyRaw, array<MlBrowserEntry@> &out entries) {
+        entries.Resize(0);
+        string folderKey = _MlBrowserCollapseSlashes(folderKeyRaw.Trim());
+        while (folderKey.StartsWith("/")) folderKey = folderKey.SubStr(1);
+        while (folderKey.EndsWith("/")) folderKey = folderKey.SubStr(0, folderKey.Length - 1);
+        if (folderKey.Length == 0) return;
+
+        string folderPrefix = folderKey + "/";
+        for (uint i = 0; i < g_MlBrowserEntries.Length; ++i) {
+            auto entry = g_MlBrowserEntries[i];
+            if (entry is null) continue;
+            string relPath = "";
+            if (!_MlBrowserTryGetNadeoRelPath(entry.url, relPath)) continue;
+            if (relPath == folderKey || relPath.StartsWith(folderPrefix)) {
+                entries.InsertLast(entry);
+            }
+        }
+    }
+
+    string _MlBrowserEntryLabel(const MlBrowserEntry@ entry) {
+        if (entry is null) return "(null)";
+        string url = entry.url;
+        if (url.StartsWith("file://")) url = url.SubStr(7);
+        url = url.Replace("\\", "/");
+        int slash = url.LastIndexOf("/");
+        if (slash >= 0 && slash + 1 < int(url.Length)) return url.SubStr(slash + 1);
+        return url;
+    }
+
+    void _MlBrowserCacheThumbTexture(const string &in url, UI::Texture@ tex) {
+        if (url.Length == 0 || tex is null) return;
+        bool existed = g_MlBrowserThumbTextureCache.Exists(url);
+        g_MlBrowserThumbTextureCache.Set(url, @tex);
+        g_MlBrowserThumbErrorCache.Delete(url);
+        if (!existed) {
+            g_MlBrowserThumbCacheKeys.InsertLast(url);
+            const uint kMaxThumbCache = 192;
+            if (g_MlBrowserThumbCacheKeys.Length > kMaxThumbCache) {
+                string victim = g_MlBrowserThumbCacheKeys[0];
+                g_MlBrowserThumbCacheKeys.RemoveAt(0);
+                g_MlBrowserThumbTextureCache.Delete(victim);
+                g_MlBrowserThumbErrorCache.Delete(victim);
+            }
+        }
+    }
+
+    bool _MlBrowserTryGetThumbTexture(const string &in rawUrl, UI::Texture@ &out texture, string &out errorDetails, bool &out loading) {
+        @texture = null;
+        errorDetails = "";
+        loading = false;
+
+        string url = _MlBrowserNormalizeUrl(rawUrl);
+        if (url.Length == 0) return false;
+
+        UI::Texture@ cached = null;
+        if (g_MlBrowserThumbTextureCache.Get(url, @cached) && cached !is null) {
+            vec2 texSize = vec2();
+            if (_MlBrowserTextureHasValidSize(cached, texSize)) {
+                @texture = cached;
+                return true;
+            }
+            g_MlBrowserThumbTextureCache.Delete(url);
+        }
+
+        if (g_MlBrowserPreviewTextureUrl == url && g_MlBrowserPreviewTexture !is null) {
+            vec2 texSize = vec2();
+            if (_MlBrowserTextureHasValidSize(g_MlBrowserPreviewTexture, texSize)) {
+                _MlBrowserCacheThumbTexture(url, g_MlBrowserPreviewTexture);
+                @texture = g_MlBrowserPreviewTexture;
+                return true;
+            }
+        }
+
+        string cachedErr = "";
+        if (g_MlBrowserThumbErrorCache.Get(url, cachedErr) && cachedErr.Length > 0) {
+            string convertedPath = "";
+            bool hasNewConverted = g_MlBrowserConvertedPathCache.Get(url, convertedPath)
+                && convertedPath.Length > 0
+                && IO::FileExists(convertedPath);
+            if (!hasNewConverted) {
+                if (g_MlBrowserConvertJobRunning && g_MlBrowserConvertJobUrl == url) {
+                    loading = true;
+                    errorDetails = "Preparing DDS preview fallback...";
+                } else {
+                    errorDetails = cachedErr;
+                }
+                return false;
+            }
+            g_MlBrowserThumbErrorCache.Delete(url);
+        }
+
+        if (!_MlBrowserTryConsumeThumbBudget()) {
+            loading = true;
+            return false;
+        }
+
+        array<string> candidates;
+        _MlBrowserBuildLoadCandidates(url, candidates);
+        bool queuedDdsConversion = false;
+
+        for (uint i = 0; i < candidates.Length; ++i) {
+            string candidate = candidates[i];
+            try {
+                auto tex = UI::LoadTexture(candidate);
+                if (tex !is null) {
+                    vec2 texSize = vec2();
+                    if (_MlBrowserTextureHasValidSize(tex, texSize)) {
+                        _MlBrowserCacheThumbTexture(url, tex);
+                        @texture = tex;
+                        return true;
+                    }
+                }
+            } catch {
+            }
+
+            UI::Texture@ texFromBuf = null;
+            if (_MlBrowserTryLoadTextureFromBuffer(candidate, texFromBuf) && texFromBuf !is null) {
+                vec2 texSize = vec2();
+                if (_MlBrowserTextureHasValidSize(texFromBuf, texSize)) {
+                    _MlBrowserCacheThumbTexture(url, texFromBuf);
+                    @texture = texFromBuf;
+                    return true;
+                }
+            }
+
+            if (candidate.ToLower().EndsWith(".dds")) {
+                _MlBrowserQueueDdsConversion(url, candidate);
+                queuedDdsConversion = true;
+            }
+        }
+
+        if (queuedDdsConversion) {
+            string convertErr = "";
+            if (g_MlBrowserConvertedErrorCache.Get(url, convertErr) && convertErr.Length > 0) {
+                errorDetails = "DDS conversion failed: " + convertErr;
+                g_MlBrowserThumbErrorCache.Set(url, errorDetails);
+            } else {
+                loading = true;
+                errorDetails = "Preparing DDS preview fallback...";
+            }
+            return false;
+        }
+
+        errorDetails = "Could not load preview.";
+        g_MlBrowserThumbErrorCache.Set(url, errorDetails);
+        return false;
+    }
+
     void _MlBrowserRenderTreeNode(MlBrowserTreeNode@ node) {
         if (node is null) return;
         UI::PushID("ml-browser-tree-" + node.key);
         if (node.isFile) {
             bool isSel = node.entry !is null && g_MlBrowserSelectedUrl == node.entry.url;
             bool isFav = node.entry !is null && _MlBrowserIsFavorite(node.entry.url);
+            if (node.entry !is null) g_MlBrowserVisibleUrls.InsertLast(node.entry.url);
 
             string ext = _MlBrowserFileExtension(node.name);
             string color = _MlBrowserFileColorCode(ext);
@@ -551,6 +944,10 @@ namespace Debug {
             string label = color + icon + "\\$z " + node.name + favStar;
 
             if (UI::Selectable(label + "##ml-browser-file", isSel) && node.entry !is null) _MlBrowserSelectUrl(node.entry.url);
+            if (isSel && g_MlBrowserScrollToSelection) {
+                UI::SetScrollHereY();
+                g_MlBrowserScrollToSelection = false;
+            }
 
             if (isSel) {
                 vec4 r = UI::GetItemRect();
@@ -585,6 +982,17 @@ namespace Debug {
         }
 
         bool open = UI::TreeNode(folderLabel);
+        bool folderSelected = g_MlBrowserSelectedFolderKey == node.key;
+        if (folderSelected) {
+            vec4 r = UI::GetItemRect();
+            vec4 box = vec4(r.x - 2.0f, r.y - 1.0f, r.z + 2.0f, r.w + 1.0f);
+            auto dl = UI::GetWindowDrawList();
+            dl.AddRectFilled(box, vec4(0.98f, 0.78f, 0.28f, 0.08f));
+            dl.AddRect(box, vec4(0.98f, 0.78f, 0.28f, 0.40f));
+        }
+        if (UI::IsItemHovered() && UI::IsMouseClicked(UI::MouseButton::Right)) {
+            _MlBrowserSelectFolder(node.key, node.name);
+        }
         if (open) {
             for (uint i = 0; i < node.children.Length; ++i) {
                 _MlBrowserRenderTreeNode(node.children[i]);
@@ -620,30 +1028,22 @@ namespace Debug {
 
         string converted = "";
         if (g_MlBrowserConvertedPathCache.Get(u, converted) && converted.Length > 0 && IO::FileExists(converted)) return;
+        if (g_MlBrowserConvertJobRunning && g_MlBrowserConvertJobUrl == u && g_MlBrowserConvertJobRawPath == raw) return;
+        if (_MlBrowserFindQueuedConversionIx(u, raw) >= 0) return;
 
         if (g_MlBrowserConvertJobRunning) {
             if (g_MlBrowserConvertJobStartedMs > 0 && int(Time::Now - g_MlBrowserConvertJobStartedMs) > 15000) {
                 _MlBrowserWarn("DDS conversion worker looked stale; resetting queue state.");
-                g_MlBrowserConvertJobRunning = false;
-                g_MlBrowserConvertJobUrl = "";
-                g_MlBrowserConvertJobRawPath = "";
-                g_MlBrowserConvertQueuedUrl = "";
-                g_MlBrowserConvertQueuedRawPath = "";
-                g_MlBrowserConvertJobStartedMs = 0;
+                _MlBrowserClearActiveConversion();
             }
         }
 
         if (g_MlBrowserConvertJobRunning) {
-            if (g_MlBrowserConvertJobUrl == u && g_MlBrowserConvertJobRawPath == raw) return;
-            g_MlBrowserConvertQueuedUrl = u;
-            g_MlBrowserConvertQueuedRawPath = raw;
+            _MlBrowserEnqueueConversion(u, raw);
             return;
         }
 
-        g_MlBrowserConvertJobRunning = true;
-        g_MlBrowserConvertJobStartedMs = Time::Now;
-        g_MlBrowserConvertJobUrl = u;
-        g_MlBrowserConvertJobRawPath = raw;
+        _MlBrowserStartActiveConversion(u, raw, Time::Now);
         startnew(_MlBrowserRunDdsConversionWorker);
     }
 
@@ -670,20 +1070,13 @@ namespace Debug {
                 _MlBrowserWarn("DDS conversion failed: " + err + " | " + url);
             }
 
-            g_MlBrowserConvertJobRunning = false;
-            g_MlBrowserConvertJobUrl = "";
-            g_MlBrowserConvertJobRawPath = "";
-            g_MlBrowserConvertJobStartedMs = 0;
+            _MlBrowserClearActiveConversion();
 
-            string nextUrl = g_MlBrowserConvertQueuedUrl;
-            string nextRaw = g_MlBrowserConvertQueuedRawPath;
-            g_MlBrowserConvertQueuedUrl = "";
-            g_MlBrowserConvertQueuedRawPath = "";
-            if (nextUrl.Length > 0 && nextRaw.Length > 0) {
-                g_MlBrowserConvertJobRunning = true;
-                g_MlBrowserConvertJobStartedMs = Time::Now;
-                g_MlBrowserConvertJobUrl = nextUrl;
-                g_MlBrowserConvertJobRawPath = nextRaw;
+            string nextUrl = "";
+            string nextRaw = "";
+            uint nextQueuedAtMs = 0;
+            if (_MlBrowserPopNextQueuedConversion(nextUrl, nextRaw, nextQueuedAtMs)) {
+                _MlBrowserStartActiveConversion(nextUrl, nextRaw, nextQueuedAtMs);
                 yield();
                 continue;
             }
@@ -1716,6 +2109,8 @@ namespace Debug {
     void _MlBrowserSelectUrl(const string &in url) {
         string normalized = _MlBrowserNormalizeUrl(url);
         if (g_MlBrowserSelectedUrl == normalized) return;
+        _MlBrowserPushHistory();
+        _MlBrowserClearFolderSelection();
         g_MlBrowserSelectedUrl = normalized;
         @g_MlBrowserPreviewTexture = null;
         g_MlBrowserPreviewTextureUrl = "";

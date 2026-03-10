@@ -70,6 +70,44 @@ namespace ML {
         }
     }
 
+    string _BuildIndexPath(CGameManialinkControl@ n) {
+        if (n is null) return "";
+
+        array<string> reversedParts;
+        auto cur = n;
+        uint depth = 0;
+        while (cur !is null && depth < 256) {
+            auto parent = _TryGetParent(cur);
+            if (parent is null) break;
+
+            auto pf = cast<CGameManialinkFrame@>(parent);
+            if (pf is null) return "";
+
+            int childIx = -1;
+            for (uint i = 0; i < pf.Controls.Length; ++i) {
+                if (pf.Controls[i] is cur) {
+                    childIx = int(i);
+                    break;
+                }
+            }
+            if (childIx < 0) return "";
+
+            reversedParts.InsertLast("" + childIx);
+            @cur = parent;
+            depth++;
+        }
+
+        if (depth >= 256) return "";
+        if (reversedParts.Length == 0) return ".";
+
+        string path = "";
+        for (int i = int(reversedParts.Length) - 1; i >= 0; --i) {
+            if (path.Length > 0) path += "/";
+            path += reversedParts[uint(i)];
+        }
+        return path;
+    }
+
     string ReadText(CGameManialinkControl@ n) {
         if (n is null) return "";
         auto c = _TryGetControl(n);
@@ -699,6 +737,10 @@ namespace ML {
         Json::Value@ snap = SnapshotStyleNode(n, includeChildren, maxDepth, includeTextValues);
         if (snap is null) return false;
 
+        string selectorTrim = selector.Trim();
+        string indexPath = _BuildIndexPath(n);
+        if (selectorTrim.Length == 0 && indexPath.Length == 0) return false;
+
         Json::Value@ entry = Json::Object();
         string type = TypeName(n);
         string entryName = name.Trim();
@@ -710,8 +752,8 @@ namespace ML {
         entry["name"] = entryName;
         entry["type"] = type;
         entry["control_id"] = n.ControlId;
-        entry["selector"] = selector.Trim();
-        entry["index_path"] = "";
+        entry["selector"] = selectorTrim;
+        entry["index_path"] = indexPath;
         entry["snapshot"] = snap;
 
         Json::Value@ entries = pack["entries"];
@@ -752,6 +794,9 @@ namespace ML {
             CGameManialinkControl@ dst = null;
             if (selector.Length > 0) {
                 @dst = ResolveSelector(selector, root);
+            }
+            if (dst is null && indexPath == ".") {
+                @dst = root;
             }
             if (dst is null && indexPath.Length > 0) {
                 @dst = ResolveSelector(indexPath, root);

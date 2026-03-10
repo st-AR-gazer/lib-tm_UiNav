@@ -85,8 +85,8 @@ namespace Builder {
     }
 
     shared class BuilderDocument {
-        string format = "uinav_builder_doc_v1_2";
-        int version = 1;
+        string format = "uinav_builder_doc";
+        string schemaVersion = "1.2";
         string name = "UiNav_Builder";
         string sourceKind = "new"; // new|import_xml|import_live_layer|import_live_tree
         string sourceLabel;

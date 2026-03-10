@@ -282,7 +282,7 @@ namespace Builder {
         if (src is null) return _NewDocument();
         auto d = BuilderDocument();
         d.format = src.format;
-        d.version = src.version;
+        d.schemaVersion = src.schemaVersion;
         d.name = src.name;
         d.sourceKind = src.sourceKind;
         d.sourceLabel = src.sourceLabel;

@@ -68,6 +68,374 @@ namespace Builder {
         return int(parent.childIx.Length);
     }
 
+    bool _BuilderJsonHas(const Json::Value@ obj, const string &in key) {
+        try {
+            return obj !is null && obj.HasKey(key);
+        } catch {
+            return false;
+        }
+    }
+
+    string _BuilderJsonStr(const Json::Value@ obj, const string &in key, const string &in fallback = "") {
+        try {
+            if (!_BuilderJsonHas(obj, key)) return fallback;
+            return string(obj[key]);
+        } catch {
+            return fallback;
+        }
+    }
+
+    int _BuilderJsonInt(const Json::Value@ obj, const string &in key, int fallback = 0) {
+        try {
+            if (!_BuilderJsonHas(obj, key)) return fallback;
+            return int(obj[key]);
+        } catch {
+            return fallback;
+        }
+    }
+
+    float _BuilderJsonFloat(const Json::Value@ obj, const string &in key, float fallback = 0.0f) {
+        try {
+            if (!_BuilderJsonHas(obj, key)) return fallback;
+            return float(obj[key]);
+        } catch {
+            return fallback;
+        }
+    }
+
+    bool _BuilderJsonBool(const Json::Value@ obj, const string &in key, bool fallback = false) {
+        try {
+            if (!_BuilderJsonHas(obj, key)) return fallback;
+            return bool(obj[key]);
+        } catch {
+            string raw = _BuilderJsonStr(obj, key, fallback ? "true" : "false").ToLower();
+            return raw == "1" || raw == "true" || raw == "yes" || raw == "on";
+        }
+    }
+
+    bool _BuilderJsonIsAbsPath(const string &in rawPath) {
+        if (rawPath.Length < 1) return false;
+        if (rawPath[0] == 47 || rawPath[0] == 92) return true;
+        if (rawPath.Length >= 2 && rawPath[1] == 58) return true;
+        return false;
+    }
+
+    string _BuilderJsonResolvePath(const string &in rawPath) {
+        string path = rawPath.Trim();
+        if (path.Length == 0) return IO::FromStorageFolder("Exports/Builder/uinav_builder_doc.json");
+        if (_BuilderJsonIsAbsPath(path)) return path;
+        return IO::FromStorageFolder(path);
+    }
+
+    Json::Value@ _BuilderStringArrayToJson(const array<string> &in values) {
+        Json::Value@ outObj = Json::Object();
+        outObj["count"] = int(values.Length);
+        for (uint i = 0; i < values.Length; ++i) {
+            outObj["i" + i] = values[i];
+        }
+        return outObj;
+    }
+
+    void _BuilderJsonToStringArray(const Json::Value@ obj, array<string> &out values) {
+        values.Resize(0);
+        if (obj is null) return;
+        int count = _BuilderJsonInt(obj, "count", 0);
+        if (count < 0) count = 0;
+        for (int i = 0; i < count; ++i) {
+            values.InsertLast(_BuilderJsonStr(obj, "i" + i, ""));
+        }
+    }
+
+    Json::Value@ _BuilderIntArrayToJson(const array<int> &in values) {
+        Json::Value@ outObj = Json::Object();
+        outObj["count"] = int(values.Length);
+        for (uint i = 0; i < values.Length; ++i) {
+            outObj["i" + i] = values[i];
+        }
+        return outObj;
+    }
+
+    void _BuilderJsonToIntArray(const Json::Value@ obj, array<int> &out values) {
+        values.Resize(0);
+        if (obj is null) return;
+        int count = _BuilderJsonInt(obj, "count", 0);
+        if (count < 0) count = 0;
+        for (int i = 0; i < count; ++i) {
+            values.InsertLast(_BuilderJsonInt(obj, "i" + i, -1));
+        }
+    }
+
+    Json::Value@ _BuilderRawAttrsToJson(const dictionary &in rawAttrs) {
+        Json::Value@ outObj = Json::Object();
+        array<string> keys = rawAttrs.GetKeys();
+        keys.SortAsc();
+        outObj["count"] = int(keys.Length);
+        for (uint i = 0; i < keys.Length; ++i) {
+            string value = "";
+            rawAttrs.Get(keys[i], value);
+            Json::Value@ item = Json::Object();
+            item["key"] = keys[i];
+            item["value"] = value;
+            outObj["i" + i] = item;
+        }
+        return outObj;
+    }
+
+    void _BuilderJsonToRawAttrs(const Json::Value@ obj, dictionary &inout rawAttrs) {
+        rawAttrs.DeleteAll();
+        if (obj is null) return;
+        int count = _BuilderJsonInt(obj, "count", 0);
+        if (count < 0) count = 0;
+        for (int i = 0; i < count; ++i) {
+            const Json::Value@ item = obj["i" + i];
+            if (item is null) continue;
+            string key = _BuilderJsonStr(item, "key", "");
+            if (key.Length == 0) continue;
+            rawAttrs.Set(key, _BuilderJsonStr(item, "value", ""));
+        }
+    }
+
+    Json::Value@ _BuilderTypedPropsToJson(const BuilderTypedProps@ typed) {
+        Json::Value@ obj = Json::Object();
+        if (typed is null) return obj;
+
+        obj["size_x"] = typed.size.x;
+        obj["size_y"] = typed.size.y;
+        obj["pos_x"] = typed.pos.x;
+        obj["pos_y"] = typed.pos.y;
+        obj["z"] = typed.z;
+        obj["scale"] = typed.scale;
+        obj["rot"] = typed.rot;
+        obj["visible"] = typed.visible;
+        obj["h_align"] = typed.hAlign;
+        obj["v_align"] = typed.vAlign;
+
+        obj["clip_active"] = typed.clipActive;
+        obj["clip_pos_x"] = typed.clipPos.x;
+        obj["clip_pos_y"] = typed.clipPos.y;
+        obj["clip_size_x"] = typed.clipSize.x;
+        obj["clip_size_y"] = typed.clipSize.y;
+
+        obj["image"] = typed.image;
+        obj["image_focus"] = typed.imageFocus;
+        obj["alpha_mask"] = typed.alphaMask;
+        obj["style"] = typed.style;
+        obj["sub_style"] = typed.subStyle;
+        obj["bg_color"] = typed.bgColor;
+        obj["bg_color_focus"] = typed.bgColorFocus;
+        obj["modulate_color"] = typed.modulateColor;
+        obj["colorize"] = typed.colorize;
+        obj["opacity"] = typed.opacity;
+        obj["keep_ratio_mode"] = typed.keepRatioMode;
+        obj["blend_mode"] = typed.blendMode;
+
+        obj["text"] = typed.text;
+        obj["text_size"] = typed.textSize;
+        obj["text_font"] = typed.textFont;
+        obj["text_prefix"] = typed.textPrefix;
+        obj["text_color"] = typed.textColor;
+        obj["max_line"] = typed.maxLine;
+        obj["auto_new_line"] = typed.autoNewLine;
+        obj["line_spacing"] = typed.lineSpacing;
+        obj["italic_slope"] = typed.italicSlope;
+        obj["append_ellipsis"] = typed.appendEllipsis;
+
+        obj["value"] = typed.value;
+        obj["text_format"] = typed.textFormat;
+        obj["max_length"] = typed.maxLength;
+        return obj;
+    }
+
+    BuilderTypedProps@ _BuilderJsonToTypedProps(const Json::Value@ obj) {
+        BuilderTypedProps@ typed = BuilderTypedProps();
+        if (obj is null) return typed;
+
+        typed.size = vec2(_BuilderJsonFloat(obj, "size_x", typed.size.x), _BuilderJsonFloat(obj, "size_y", typed.size.y));
+        typed.pos = vec2(_BuilderJsonFloat(obj, "pos_x", typed.pos.x), _BuilderJsonFloat(obj, "pos_y", typed.pos.y));
+        typed.z = _BuilderJsonFloat(obj, "z", typed.z);
+        typed.scale = _BuilderJsonFloat(obj, "scale", typed.scale);
+        typed.rot = _BuilderJsonFloat(obj, "rot", typed.rot);
+        typed.visible = _BuilderJsonBool(obj, "visible", typed.visible);
+        typed.hAlign = _BuilderJsonStr(obj, "h_align", typed.hAlign);
+        typed.vAlign = _BuilderJsonStr(obj, "v_align", typed.vAlign);
+
+        typed.clipActive = _BuilderJsonBool(obj, "clip_active", typed.clipActive);
+        typed.clipPos = vec2(_BuilderJsonFloat(obj, "clip_pos_x", typed.clipPos.x), _BuilderJsonFloat(obj, "clip_pos_y", typed.clipPos.y));
+        typed.clipSize = vec2(_BuilderJsonFloat(obj, "clip_size_x", typed.clipSize.x), _BuilderJsonFloat(obj, "clip_size_y", typed.clipSize.y));
+
+        typed.image = _BuilderJsonStr(obj, "image", typed.image);
+        typed.imageFocus = _BuilderJsonStr(obj, "image_focus", typed.imageFocus);
+        typed.alphaMask = _BuilderJsonStr(obj, "alpha_mask", typed.alphaMask);
+        typed.style = _BuilderJsonStr(obj, "style", typed.style);
+        typed.subStyle = _BuilderJsonStr(obj, "sub_style", typed.subStyle);
+        typed.bgColor = _BuilderJsonStr(obj, "bg_color", typed.bgColor);
+        typed.bgColorFocus = _BuilderJsonStr(obj, "bg_color_focus", typed.bgColorFocus);
+        typed.modulateColor = _BuilderJsonStr(obj, "modulate_color", typed.modulateColor);
+        typed.colorize = _BuilderJsonStr(obj, "colorize", typed.colorize);
+        typed.opacity = _BuilderJsonFloat(obj, "opacity", typed.opacity);
+        typed.keepRatioMode = _BuilderJsonInt(obj, "keep_ratio_mode", typed.keepRatioMode);
+        typed.blendMode = _BuilderJsonInt(obj, "blend_mode", typed.blendMode);
+
+        typed.text = _BuilderJsonStr(obj, "text", typed.text);
+        typed.textSize = _BuilderJsonFloat(obj, "text_size", typed.textSize);
+        typed.textFont = _BuilderJsonStr(obj, "text_font", typed.textFont);
+        typed.textPrefix = _BuilderJsonStr(obj, "text_prefix", typed.textPrefix);
+        typed.textColor = _BuilderJsonStr(obj, "text_color", typed.textColor);
+        typed.maxLine = _BuilderJsonInt(obj, "max_line", typed.maxLine);
+        typed.autoNewLine = _BuilderJsonBool(obj, "auto_new_line", typed.autoNewLine);
+        typed.lineSpacing = _BuilderJsonFloat(obj, "line_spacing", typed.lineSpacing);
+        typed.italicSlope = _BuilderJsonFloat(obj, "italic_slope", typed.italicSlope);
+        typed.appendEllipsis = _BuilderJsonBool(obj, "append_ellipsis", typed.appendEllipsis);
+
+        typed.value = _BuilderJsonStr(obj, "value", typed.value);
+        typed.textFormat = _BuilderJsonInt(obj, "text_format", typed.textFormat);
+        typed.maxLength = _BuilderJsonInt(obj, "max_length", typed.maxLength);
+        return typed;
+    }
+
+    Json::Value@ _BuilderNodeToJson(const BuilderNode@ node) {
+        Json::Value@ obj = Json::Object();
+        if (node is null) return obj;
+
+        obj["uid"] = node.uid;
+        obj["kind"] = node.kind;
+        obj["control_id"] = node.controlId;
+        obj["tag_name"] = node.tagName;
+        obj["parent_ix"] = node.parentIx;
+        obj["child_ix"] = _BuilderIntArrayToJson(node.childIx);
+        obj["typed"] = _BuilderTypedPropsToJson(node.typed);
+        obj["raw_attrs"] = _BuilderRawAttrsToJson(node.rawAttrs);
+        obj["classes"] = _BuilderStringArrayToJson(node.classes);
+        obj["script_events"] = node.scriptEvents;
+
+        Json::Value@ fidelity = Json::Object();
+        fidelity["level"] = node.fidelity.level;
+        fidelity["reasons"] = _BuilderStringArrayToJson(node.fidelity.reasons);
+        obj["fidelity"] = fidelity;
+
+        Json::Value@ span = Json::Object();
+        span["start"] = node.span.start;
+        span["end"] = node.span.end;
+        obj["span"] = span;
+        return obj;
+    }
+
+    BuilderNode@ _BuilderJsonToNode(const Json::Value@ obj) {
+        if (obj is null) return null;
+
+        BuilderNode@ node = BuilderNode();
+        node.uid = _BuilderJsonStr(obj, "uid", "");
+        node.kind = _BuilderJsonStr(obj, "kind", "frame");
+        node.controlId = _BuilderJsonStr(obj, "control_id", "");
+        node.tagName = _BuilderJsonStr(obj, "tag_name", node.kind);
+        node.parentIx = _BuilderJsonInt(obj, "parent_ix", -1);
+        _BuilderJsonToIntArray(obj["child_ix"], node.childIx);
+        @node.typed = _BuilderJsonToTypedProps(obj["typed"]);
+        _BuilderJsonToRawAttrs(obj["raw_attrs"], node.rawAttrs);
+        _BuilderJsonToStringArray(obj["classes"], node.classes);
+        node.scriptEvents = _BuilderJsonBool(obj, "script_events", false);
+
+        const Json::Value@ fidelity = obj["fidelity"];
+        node.fidelity.level = _BuilderJsonInt(fidelity, "level", 0);
+        _BuilderJsonToStringArray(fidelity["reasons"], node.fidelity.reasons);
+
+        const Json::Value@ span = obj["span"];
+        node.span.start = _BuilderJsonInt(span, "start", -1);
+        node.span.end = _BuilderJsonInt(span, "end", -1);
+
+        _EnsureNodeDefaults(node);
+        return node;
+    }
+
+    Json::Value@ _BuilderDiagToJson(const BuilderDiagnostic@ diag) {
+        Json::Value@ obj = Json::Object();
+        if (diag is null) return obj;
+        obj["code"] = diag.code;
+        obj["severity"] = diag.severity;
+        obj["message"] = diag.message;
+        obj["node_uid"] = diag.nodeUid;
+        return obj;
+    }
+
+    BuilderDiagnostic@ _BuilderJsonToDiag(const Json::Value@ obj) {
+        if (obj is null) return null;
+        BuilderDiagnostic@ diag = BuilderDiagnostic();
+        diag.code = _BuilderJsonStr(obj, "code", "");
+        diag.severity = _BuilderJsonStr(obj, "severity", "");
+        diag.message = _BuilderJsonStr(obj, "message", "");
+        diag.nodeUid = _BuilderJsonStr(obj, "node_uid", "");
+        return diag;
+    }
+
+    Json::Value@ _BuilderDocumentToJson(const BuilderDocument@ doc) {
+        if (doc is null) return null;
+
+        Json::Value@ root = Json::Object();
+        root["format"] = doc.format;
+        root["schema_version"] = doc.schemaVersion;
+        root["name"] = doc.name;
+        root["source_kind"] = doc.sourceKind;
+        root["source_label"] = doc.sourceLabel;
+        root["root_ix"] = doc.rootIx;
+        root["original_xml"] = doc.originalXml;
+        root["dirty"] = doc.dirty;
+
+        root["script_block"] = doc.scriptBlock is null ? "" : doc.scriptBlock.raw;
+        root["stylesheet_block"] = doc.stylesheetBlock is null ? "" : doc.stylesheetBlock.raw;
+
+        Json::Value@ nodes = Json::Object();
+        nodes["count"] = int(doc.nodes.Length);
+        for (uint i = 0; i < doc.nodes.Length; ++i) {
+            nodes["i" + i] = _BuilderNodeToJson(doc.nodes[i]);
+        }
+        root["nodes"] = nodes;
+
+        Json::Value@ diags = Json::Object();
+        diags["count"] = int(doc.diagnostics.Length);
+        for (uint i = 0; i < doc.diagnostics.Length; ++i) {
+            diags["i" + i] = _BuilderDiagToJson(doc.diagnostics[i]);
+        }
+        root["diagnostics"] = diags;
+        return root;
+    }
+
+    BuilderDocument@ _BuilderDocumentFromJson(const Json::Value@ root, const string &in sourceKind = "import_json", const string &in sourceLabel = "") {
+        if (root is null) return null;
+
+        BuilderDocument@ doc = BuilderDocument();
+        doc.format = _BuilderJsonStr(root, "format", doc.format);
+        doc.schemaVersion = _BuilderJsonStr(root, "schema_version", doc.schemaVersion);
+        doc.name = _BuilderJsonStr(root, "name", doc.name);
+        doc.sourceKind = sourceKind.Length > 0 ? sourceKind : _BuilderJsonStr(root, "source_kind", doc.sourceKind);
+        doc.sourceLabel = sourceLabel.Length > 0 ? sourceLabel : _BuilderJsonStr(root, "source_label", "");
+        doc.rootIx = _BuilderJsonInt(root, "root_ix", -1);
+        doc.originalXml = _BuilderJsonStr(root, "original_xml", "");
+        doc.dirty = _BuilderJsonBool(root, "dirty", false);
+
+        @doc.scriptBlock = BuilderScriptBlock();
+        doc.scriptBlock.raw = _BuilderJsonStr(root, "script_block", "");
+        @doc.stylesheetBlock = BuilderStylesheetBlock();
+        doc.stylesheetBlock.raw = _BuilderJsonStr(root, "stylesheet_block", "");
+
+        const Json::Value@ nodes = root["nodes"];
+        int nodeCount = _BuilderJsonInt(nodes, "count", 0);
+        if (nodeCount < 0) nodeCount = 0;
+        for (int i = 0; i < nodeCount; ++i) {
+            doc.nodes.InsertLast(_BuilderJsonToNode(nodes["i" + i]));
+        }
+
+        const Json::Value@ diags = root["diagnostics"];
+        int diagCount = _BuilderJsonInt(diags, "count", 0);
+        if (diagCount < 0) diagCount = 0;
+        for (int i = 0; i < diagCount; ++i) {
+            auto diag = _BuilderJsonToDiag(diags["i" + i]);
+            if (diag !is null) doc.diagnostics.InsertLast(diag);
+        }
+
+        _FinalizeDocument(doc);
+        return doc;
+    }
+
     BuilderDocument@ NewDocument() {
         auto doc = _NewDocument();
         _FinalizeDocument(doc);
@@ -100,8 +468,48 @@ namespace Builder {
         return doc;
     }
 
+    BuilderDocument@ ImportJson(const string &in jsonText, const string &in sourceKind = "import_json", const string &in sourceLabel = "") {
+        string txt = jsonText.Trim();
+        if (txt.Length == 0) return null;
+        try {
+            auto root = Json::Parse(txt);
+            return _BuilderDocumentFromJson(root, sourceKind, sourceLabel);
+        } catch {
+            return null;
+        }
+    }
+
     string ExportXml(const BuilderDocument@ doc) {
         return ExportToXml(doc);
+    }
+
+    string ExportJson(const BuilderDocument@ doc) {
+        auto root = _BuilderDocumentToJson(doc);
+        if (root is null) return "";
+        try {
+            return Json::Write(root);
+        } catch {
+            return "";
+        }
+    }
+
+    bool SaveJsonToFile(const BuilderDocument@ doc, const string &in path = "") {
+        auto root = _BuilderDocumentToJson(doc);
+        if (root is null) return false;
+        string outPath = _BuilderJsonResolvePath(path);
+        _IO::File::WriteJsonFile(outPath, root);
+        return true;
+    }
+
+    BuilderDocument@ LoadJsonFromFile(const string &in path, const string &in sourceKind = "import_json_file", const string &in sourceLabel = "") {
+        string inPath = _BuilderJsonResolvePath(path);
+        if (!IO::FileExists(inPath)) return null;
+        string txt = _IO::File::ReadFileToEnd(inPath);
+        if (txt.Trim().Length == 0) return null;
+        BuilderDocument@ doc = ImportJson(txt, sourceKind, sourceLabel.Length > 0 ? sourceLabel : inPath);
+        if (doc is null) return null;
+        if (doc.sourceLabel.Length == 0) doc.sourceLabel = inPath;
+        return doc;
     }
 
     int AppendRoot(BuilderDocument@ doc, BuilderNode@ node) {
@@ -344,9 +752,15 @@ namespace Builder {
         for (uint i = 0; i < toks.Length; ++i) {
             auto tok = toks[i];
             if (tok is null) return -1;
-            curIx = tok.descendant
-                ? _PickNthMatchDescendant(doc, curIx, tok)
-                : _PickNthMatchAmongChildren(doc, curIx, tok);
+            if (tok.descendant) {
+                curIx = _PickNthMatchDescendant(doc, curIx, tok);
+            } else {
+                if (i == 0 && !tok.isIndex) {
+                    auto cur = doc.nodes[uint(curIx)];
+                    if (_MatchSelectorTok(cur, tok)) continue;
+                }
+                curIx = _PickNthMatchAmongChildren(doc, curIx, tok);
+            }
             if (curIx < 0) return -1;
         }
 

@@ -75,7 +75,7 @@ namespace UiNav {
     }
 
     shared class ControlTreeReq {
-        uint overlay   = 16;
+        uint overlay   = 0;
         uint rootIx    = 0;
 
         bool anyRoot   = false;

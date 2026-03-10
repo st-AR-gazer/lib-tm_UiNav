@@ -14,6 +14,11 @@ namespace Metrics {
 
     dictionary g_Latency;
 
+    string _ScopeMetricName(const string &in name) {
+        if (name.Length == 0) return "";
+        return UiNav::Layers::_CurrentCallerScope() + "|" + name;
+    }
+
     LatencyBucket@ _Get(const string &in name, bool createIfMissing = false) {
         if (name.Length == 0) return null;
         LatencyBucket@ b;
@@ -25,7 +30,7 @@ namespace Metrics {
     }
 
     void Record(const string &in name, uint elapsedMs) {
-        auto b = _Get(name, true);
+        auto b = _Get(_ScopeMetricName(name), true);
         if (b is null) return;
 
         b.count++;
@@ -44,31 +49,31 @@ namespace Metrics {
     }
 
     uint Count(const string &in name) {
-        auto b = _Get(name, false);
+        auto b = _Get(_ScopeMetricName(name), false);
         if (b is null) return 0;
         return b.count;
     }
 
     float AvgMs(const string &in name) {
-        auto b = _Get(name, false);
+        auto b = _Get(_ScopeMetricName(name), false);
         if (b is null || b.count == 0) return 0.0f;
         return float(b.totalMs / double(b.count));
     }
 
     uint MaxMs(const string &in name) {
-        auto b = _Get(name, false);
+        auto b = _Get(_ScopeMetricName(name), false);
         if (b is null) return 0;
         return b.maxMs;
     }
 
     uint LastMs(const string &in name) {
-        auto b = _Get(name, false);
+        auto b = _Get(_ScopeMetricName(name), false);
         if (b is null) return 0;
         return b.lastMs;
     }
 
     uint _PercentileMs(const string &in name, float pct) {
-        auto b = _Get(name, false);
+        auto b = _Get(_ScopeMetricName(name), false);
         if (b is null || b.samples.Length == 0) return 0;
         if (pct <= 0.0f) pct = 0.0f;
         if (pct >= 1.0f) pct = 1.0f;
@@ -85,7 +90,13 @@ namespace Metrics {
     uint P95Ms(const string &in name) { return _PercentileMs(name, 0.95f); }
 
     void Reset() {
-        g_Latency.DeleteAll();
+        string scopePrefix = UiNav::Layers::_CurrentCallerScope() + "|";
+        array<string> keys = g_Latency.GetKeys();
+        for (uint i = 0; i < keys.Length; ++i) {
+            string key = keys[i];
+            if (!key.StartsWith(scopePrefix)) continue;
+            g_Latency.Delete(key);
+        }
     }
 
 }

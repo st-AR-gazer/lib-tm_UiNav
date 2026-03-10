@@ -34,6 +34,10 @@ Note: `src/Exports/types.as` currently exists but is empty; shared types are pro
 
 ### Version gating
 
+UiNav's runtime API version matches the plugin package version.
+The current public API version is `0.1.0`.
+Serialized payload formats such as `BuilderDocument.format` + `BuilderDocument.schemaVersion` and ML snapshot/style-pack `format` fields are separate schema identifiers and should not be compared to the API version.
+
 ```angelscript
 if (!UiNav::ApiVersionAtLeast(0, 1, 0)) {
     // Handle old/missing UiNav (or disable your feature).
@@ -64,8 +68,8 @@ Key fields:
 `Target` is declarative now; pointer caching is internal to UiNav. If you need to flush cached native refs manually:
 
 ```angelscript
-t.InvalidateCache();
-UiNav::InvalidateTargetPlan(t); // optional: also rebuild prepared selector/requirement plan
+t.InvalidateCache();           // flush resolved native refs only
+UiNav::InvalidateTargetPlan(t); // flush resolved refs and rebuild prepared target state after mutating target fields
 ```
 
 ### `NodeRef` and `OpResult`
@@ -87,6 +91,12 @@ In practice: use `*Ex` while developing/debugging and switch to the simple varia
 - `IsManiaLink()`
 - `HasSelector()`
 - `IsNull()`
+
+Reference validation helpers:
+
+- `UiNav::ValidateRef(r)`: backend-agnostic validation for `NodeRef@`
+- `UiNav::ML::ValidateRef(r)`: ML-specific validation
+- `UiNav::CT::ValidateRef(r)`: ControlTree-specific validation
 
 ### Requirements (`Requires`)
 
@@ -125,7 +135,7 @@ In practice: use `*Ex` while developing/debugging and switch to the simple varia
 
 `UiNav::ControlTreeReq` defines how to discover candidate roots:
 
-- `overlay` (default `16`)
+- `overlay` (default `0`)
 - `rootIx` (default `0`): root to use when `anyRoot == false`
 - `anyRoot`: scan multiple roots (`scene.Mobils`) instead of only `rootIx`
 - `maxRoots`: limit any-root scan (default 24)
@@ -149,13 +159,18 @@ Root and search behavior live in `ControlTreeReq`; `ControlTreeSpec` is only `re
 UiNav now exposes a public authoring surface for clone/edit/remount workflows:
 
 - `UiNav::Builder::ImportXml(...)`
+- `UiNav::Builder::ImportJson(...)`
 - `UiNav::Builder::CloneLiveLayer(req, stripFrameClipping, centerRoots)`
 - `UiNav::Builder::NewDocument()`, `CloneDocument(...)`, `NewNode(...)`
 - `UiNav::Builder::AppendRoot(...)`, `AppendChild(...)`, `DeleteNode(...)`, `MoveNode(...)`
 - `UiNav::Builder::FindFirstById(...)`, `ResolveSelector(...)`
 - `UiNav::Builder::ExportXml(doc)`
+- `UiNav::Builder::ExportJson(doc)`, `SaveJsonToFile(doc, path)`, `LoadJsonFromFile(path)`
 - `UiNav::Builder::MountOwned(key, doc, source, visible)`
 - `UiNav::Layers::EnsureOwned(...)`, `GetOwned(...)`, `DestroyOwned(...)`, `DestroyAllOwned()`
+
+Owned-layer keys are scoped internally to the calling plugin ID.
+That means different plugins can reuse the same public key without colliding, and `DestroyAllOwned()` only destroys layers owned by the calling plugin.
 
 Example: clone a menu layer, add a label, and mount the edited copy:
 
@@ -175,6 +190,8 @@ UiNav::Builder::AppendChild(doc, parentIx, node);
 UiNav::Builder::MountOwned("MyPreview", doc, UiNav::ManiaLinkSource::Menu, true);
 ```
 
+`UiNav::Builder::ResolveSelector(...)` reuses ML selector syntax and now matches the start/root node on the first non-index token, just like `UiNav::ML::ResolveSelector(...)`.
+
 ## Typical Usage Pattern (Public API)
 
 Workflow:
@@ -184,6 +201,8 @@ Workflow:
 3. `WaitForTarget(target)` or `IsReadyEx(target)` before acting.
 4. Act: `Click`, `ReadText`, `SetText`.
 5. If both `ml` and `controlTree` are configured, set `Target.pref` explicitly.
+
+`WaitForTarget(..., 0, ...)` performs a single immediate readiness probe and returns without polling.
 
 Example: read text from a label in a specific ML layer:
 
@@ -212,7 +231,7 @@ Example: click a ControlTree node with mixed selector syntax:
 
 ```angelscript
 UiNav::ControlTreeReq@ req = UiNav::ControlTreeReq();
-req.overlay = 16;
+req.overlay = 0;
 req.rootIx = 0;
 req.anyRoot = true;
 req.maxRoots = 24;
@@ -358,17 +377,26 @@ UiNav::ML::StylePackApply(root, loaded, /*applyChildren=*/true);
 Notes:
 
 - Style packs rely on selectors (or an index path) to find destination nodes; use `StylePackAddEntryBySelector` unless you know what you're doing.
+- `StylePackAddEntry(...)` now records an index path automatically when no selector is supplied, so captured entries remain applicable as long as the destination tree shape still matches.
 - Applying snapshots modifies node properties; treat it like "live patching UI".
 
 ## Observability And Caches (Exported)
 
 UiNav exposes cache and latency metrics to help debug "it sometimes works" behavior:
 
-- Context: `ContextEpoch`, `ContextEpochBumps`, `RefreshContext`, `InvalidateAllCaches`
-- Cache counters: `CacheLayer*`, `CacheSelectorToken*`, `CacheTargetPlan*`, `ResetCacheMetrics`
+- Context: `ContextEpoch`, `ContextEpochBumps`, `RefreshContext`, `InvalidateTargetCaches`
+- Cache counters: `CacheLayer*`, `CacheSelectorToken*`, `CacheTargetPlan*`, `ResetCacheMetricBaselines`
 - Latency metrics: `Latency*` by name, `ResetLatencyMetrics`
 
 Common metric names: `resolve`, `is_ready`, `wait_for_target`, `click`, `read_text`, `set_text`, `check_requirements`.
+
+Scope semantics:
+
+- `InvalidateTargetCaches(...)` invalidates UiNav target/runtime caches for the calling plugin only.
+- `ResetCacheMetricBaselines()` resets the calling plugin's cache-metric baselines only.
+- `ResetLatencyMetrics()` clears latency samples recorded for the calling plugin only.
+- Counter-style cache getters and `Latency*` getters report values for the calling plugin scope.
+- `SharedCacheSelectorTokenSize()` reports the size of the shared selector-token cache.
 
 ## In-Game Developer Tooling (UiNav Plugin)
 
@@ -550,7 +578,7 @@ Request shape (fields can be top-level or inside `data`):
 Common causes: page rebuilds, stale pointers, or a plan cached against old UI.
 
 - Call `t.InvalidateCache()` when you know the resolved native refs are stale
-- Call `UiNav::InvalidateTargetPlan(t)` if you mutate a target or after major UI transitions
+- Call `UiNav::InvalidateTargetPlan(t)` if you mutate a target or after major UI transitions; it clears resolved refs and prepared selector/requirement state together
 - Prefer `*Ex` calls while stabilizing selectors
 
 ### Hard crash when touching nodes
@@ -558,11 +586,15 @@ Common causes: page rebuilds, stale pointers, or a plan cached against old UI.
 Almost always stale native handles:
 
 - Keep handle usage short-lived.
-- Validate ML refs before touching `NodeRef.ml`:
+- Validate refs before touching `NodeRef` handles:
 
 ```angelscript
 UiNav::NodeRef@ r = UiNav::Resolve(t);
-if (r !is null && r.kind == UiNav::BackendKind::ML && UiNav::ML::ValidateRef(r)) {
-    // Use r.ml briefly here.
+if (r !is null && UiNav::ValidateRef(r)) {
+    if (r.kind == UiNav::BackendKind::ML) {
+        // Use r.ml briefly here.
+    } else if (r.kind == UiNav::BackendKind::ControlTree) {
+        // Use r.controlTree briefly here.
+    }
 }
 ```

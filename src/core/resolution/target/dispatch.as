@@ -17,6 +17,7 @@ namespace UiNav {
     }
 
     class _TargetState {
+        string scopeId = "";
         uint seenInvalidationSerial = 1;
         uint lastTouchedMs = 0;
 
@@ -35,6 +36,7 @@ namespace UiNav {
         CGameManiaApp@ cachedManiaApp = null;
         CGameManialinkPage@ cachedLocalPage = null;
         string cachedMlSelector = "";
+        string cachedTargetConfigKey = "";
     }
 
     array<Target@> g_TargetStateHandles;
@@ -62,6 +64,96 @@ namespace UiNav {
         @st.cachedManiaApp = null;
         @st.cachedLocalPage = null;
         st.cachedMlSelector = "";
+        st.cachedTargetConfigKey = "";
+    }
+
+    string _ConfigBool(bool v) {
+        return v ? "1" : "0";
+    }
+
+    string _ConfigString(const string &in v) {
+        return "[" + tostring(v.Length) + "]" + v;
+    }
+
+    string _ConfigUIntArray(const array<uint> &in values) {
+        string key = tostring(values.Length) + ":";
+        for (uint i = 0; i < values.Length; ++i) {
+            if (i > 0) key += ",";
+            key += tostring(values[i]);
+        }
+        return key;
+    }
+
+    string _ConfigManiaLinkReq(const ManiaLinkReq@ req) {
+        if (req is null) return "<null>";
+        return UiNav::Layers::_LayerReqFrameMemoKey(req);
+    }
+
+    string _ConfigRequires(Requires@ req) {
+        if (req is null) return "<null>";
+
+        string key = "strict=" + _ConfigBool(req.strict)
+            + "|targetVisible=" + _ConfigBool(req.requireTargetVisible)
+            + "|overlaysAll=" + _ConfigUIntArray(req.overlaysAll)
+            + "|overlaysAny=" + _ConfigUIntArray(req.overlaysAny)
+            + "|layersAll=" + tostring(req.layersAll.Length)
+            + "|layersAny=" + tostring(req.layersAny.Length);
+
+        for (uint i = 0; i < req.layersAll.Length; ++i) {
+            key += "|all[" + tostring(i) + "]=" + _ConfigManiaLinkReq(req.layersAll[i]);
+        }
+        for (uint i = 0; i < req.layersAny.Length; ++i) {
+            key += "|any[" + tostring(i) + "]=" + _ConfigManiaLinkReq(req.layersAny[i]);
+        }
+        return key;
+    }
+
+    string _ConfigControlTreeReq(ControlTreeReq@ req) {
+        if (req is null) return "<null>";
+        return "ov=" + tostring(req.overlay)
+            + "|root=" + tostring(req.rootIx)
+            + "|any=" + _ConfigBool(req.anyRoot)
+            + "|maxRoots=" + tostring(req.maxRoots)
+            + "|mode=" + tostring(int(req.searchMode))
+            + "|guard=" + _ConfigString(req.guardStartsWith);
+    }
+
+    string _ConfigControlTreeSpec(ControlTreeSpec@ spec, uint depth = 0) {
+        if (spec is null) return "<null>";
+        if (depth >= 4) return "<depth>";
+
+        string key = "req=" + _ConfigControlTreeReq(spec.req)
+            + "|selector=" + _ConfigString(spec.selector.Trim())
+            + "|childFallback=" + _ConfigBool(spec.clickChildFallback)
+            + "|visible=" + _ConfigBool(spec.requireVisible)
+            + "|alts=" + tostring(spec.alts.Length);
+        for (uint i = 0; i < spec.alts.Length; ++i) {
+            key += "|alt[" + tostring(i) + "]=" + _ConfigControlTreeSpec(spec.alts[i], depth + 1);
+        }
+        return key;
+    }
+
+    string _ConfigManiaLinkSpec(ManiaLinkSpec@ spec, uint depth = 0) {
+        if (spec is null) return "<null>";
+        if (depth >= 4) return "<depth>";
+
+        string key = "req=" + _ConfigManiaLinkReq(spec.req)
+            + "|selector=" + _ConfigString(spec.selector.Trim())
+            + "|childFallback=" + _ConfigBool(spec.clickChildFallback)
+            + "|visible=" + _ConfigBool(spec.requireVisible)
+            + "|alts=" + tostring(spec.alts.Length);
+        for (uint i = 0; i < spec.alts.Length; ++i) {
+            key += "|alt[" + tostring(i) + "]=" + _ConfigManiaLinkSpec(spec.alts[i], depth + 1);
+        }
+        return key;
+    }
+
+    string _TargetConfigKey(Target@ t) {
+        if (t is null) return "<null>";
+        return "pref=" + tostring(int(t.pref))
+            + "|ct=" + _ConfigControlTreeSpec(t.controlTree)
+            + "|ml=" + _ConfigManiaLinkSpec(t.ml)
+            + "|req=" + _ConfigRequires(t.req);
     }
 
     _TargetState@ _FindTargetState(Target@ t, int &out ix) {
@@ -113,6 +205,7 @@ namespace UiNav {
         }
 
         @st = _TargetState();
+        st.scopeId = UiNav::Layers::_CurrentCallerScope();
         st.seenInvalidationSerial = t.cacheInvalidationSerial == 0 ? 1 : t.cacheInvalidationSerial;
         st.lastTouchedMs = Time::Now;
         g_TargetStateHandles.InsertLast(t);
@@ -219,9 +312,13 @@ namespace UiNav {
     }
 
     void InvalidateTargetPlan(Target@ t) {
+        if (t is null) return;
+        t.InvalidateCache();
         auto st = _GetTargetState(t, false);
         if (st is null) return;
         @st.plan = null;
+        _ClearResolvedCache(st, "target plan invalidated");
+        st.seenInvalidationSerial = t.cacheInvalidationSerial == 0 ? 1 : t.cacheInvalidationSerial;
     }
 
     uint TargetPlanCacheHits() { return g_TargetPlanHits; }
@@ -232,6 +329,18 @@ namespace UiNav {
         g_TargetPlanHits = 0;
         g_TargetPlanMisses = 0;
         g_TargetPlanRebuilds = 0;
+    }
+
+    void InvalidateTargetStatesForScope(const string &in scopeIdRaw, const string &in debug = "cache invalidated") {
+        string scopeId = scopeIdRaw.Trim();
+        if (scopeId.Length == 0) return;
+
+        for (uint i = 0; i < g_TargetStateValues.Length; ++i) {
+            auto st = g_TargetStateValues[i];
+            if (st is null || st.scopeId != scopeId) continue;
+            @st.plan = null;
+            _ClearResolvedCache(st, debug);
+        }
     }
 
     bool _CheckOverlaysAll(const array<uint> &in overlays) {
@@ -447,6 +556,11 @@ namespace UiNav {
         if (st is null) @st = _GetTargetState(t);
         if (st is null) return null;
 
+        string targetConfigKey = _TargetConfigKey(t);
+        if (st.cachedTargetConfigKey.Length > 0 && st.cachedTargetConfigKey != targetConfigKey) {
+            _ClearResolvedCache(st, "target config changed");
+        }
+
         if (st.cachedControlTree !is null && st.cacheEpoch == UiNav::Context::Epoch() && (Time::Now - st.lastResolveMs) <= kTargetPointerCacheTtlMs) {
             if (t.controlTree.requireVisible && !IsEffectivelyVisible(st.cachedControlTree)) {
                 @st.cachedControlTree = null;
@@ -486,6 +600,7 @@ namespace UiNav {
             st.cachedControlTreeRootIx = matchedRootIx;
             st.cacheEpoch = UiNav::Context::Epoch();
             st.lastKind = BackendKind::ControlTree;
+            st.cachedTargetConfigKey = targetConfigKey;
 
             auto r = NodeRef();
             r.kind = BackendKind::ControlTree;
@@ -507,6 +622,11 @@ namespace UiNav {
         if (t is null || t.ml is null) return null;
         if (st is null) @st = _GetTargetState(t);
         if (st is null) return null;
+
+        string targetConfigKey = _TargetConfigKey(t);
+        if (st.cachedTargetConfigKey.Length > 0 && st.cachedTargetConfigKey != targetConfigKey) {
+            _ClearResolvedCache(st, "target config changed");
+        }
 
         if (st.cachedMl !is null && st.cachedLayer !is null && st.cacheEpoch == UiNav::Context::Epoch() && (Time::Now - st.lastResolveMs) <= kTargetPointerCacheTtlMs) {
             auto req = _ManiaLinkSpecReq(t.ml, null);
@@ -610,6 +730,7 @@ namespace UiNav {
             st.cachedMlSelector = resolvedSelector;
             st.cacheEpoch = UiNav::Context::Epoch();
             st.lastKind = BackendKind::ML;
+            st.cachedTargetConfigKey = targetConfigKey;
 
             auto r = NodeRef();
             r.kind = BackendKind::ML;
@@ -909,6 +1030,67 @@ namespace UiNav {
         return false;
     }
 
+    bool _ControlTreeContainsNode(CControlBase@ root, CControlBase@ target, uint maxNodes = 120000) {
+        if (root is null || target is null) return false;
+
+        array<CControlBase@> q;
+        q.InsertLast(root);
+
+        uint head = 0;
+        uint visited = 0;
+        while (head < q.Length && visited < maxNodes) {
+            auto cur = q[head++];
+            if (cur is null) continue;
+            visited++;
+
+            if (cur is target) return true;
+
+            uint len = _ChildrenLen(cur);
+            for (uint i = 0; i < len; ++i) {
+                auto ch = _ChildAt(cur, i);
+                if (ch !is null) q.InsertLast(ch);
+            }
+        }
+
+        return false;
+    }
+
+    bool _ValidateControlTreeRef(NodeRef@ r) {
+        if (r is null) return false;
+        if (r.kind != BackendKind::ControlTree) return true;
+        if (r.controlTree is null) return false;
+        if (r.overlay == uint(-1) || r.rootIx == uint(-1)) return false;
+
+        CControlBase@ root = null;
+        CScene2d@ scene;
+        if (_GetScene2d(r.overlay, scene) && scene !is null && r.rootIx < scene.Mobils.Length) {
+            @root = _RootFromMobil(scene, r.rootIx);
+        }
+        if (root is null && r.rootIx == 0) {
+            @root = RootAtOverlay(r.overlay);
+        }
+        if (root is null) return false;
+
+        return _ControlTreeContainsNode(root, r.controlTree);
+    }
+
+    bool ValidateRef(NodeRef@ r) {
+        if (r is null) return false;
+        if (r.kind == BackendKind::ML) return _ValidateMLRef(r);
+        if (r.kind == BackendKind::ControlTree) return _ValidateControlTreeRef(r);
+        return false;
+    }
+
+}
+
+namespace UiNav {
+namespace CT {
+
+    bool ValidateRef(NodeRef@ r) {
+        return UiNav::_ValidateControlTreeRef(r);
+    }
+
+}
 }
 
 namespace UiNav {

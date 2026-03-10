@@ -53,6 +53,7 @@ namespace Debug {
     }
 
     void _RenderControlTreeTab() {
+        UI::SetNextItemWidth(440.0f);
         g_ControlTreeSearch = UI::InputText("Search", g_ControlTreeSearch);
         UI::SameLine();
         if (UI::Button("Clear##controlTree-search")) g_ControlTreeSearch = "";
@@ -69,6 +70,11 @@ namespace Debug {
         S_ControlTreeHideEmptyRoots = UI::Checkbox("Hide empty roots##controlTree-hide-empty", S_ControlTreeHideEmptyRoots);
         if (UI::IsItemHovered()) {
             UI::SetTooltip("Hide plain top-level Frame roots that have no children and no identifying text.");
+        }
+        UI::SameLine();
+        S_ControlTreeHideDuplicateAnonymousRoots = UI::Checkbox("Hide duplicate roots##controlTree-hide-dup", S_ControlTreeHideDuplicateAnonymousRoots);
+        if (UI::IsItemHovered()) {
+            UI::SetTooltip("Hide duplicate anonymous top-level Frame roots and keep only the first matching subtree.");
         }
         if (g_ControlTreeOverlay < -1) g_ControlTreeOverlay = -1;
         uint overlayCount = 0;
@@ -106,7 +112,9 @@ namespace Debug {
     }
 
     string _ControlTreeOverlayRootsCacheKey(uint overlay) {
-        return "ov=" + overlay + "|hide=" + (S_ControlTreeHideEmptyRoots ? "1" : "0");
+        return "ov=" + overlay
+            + "|hide=" + (S_ControlTreeHideEmptyRoots ? "1" : "0")
+            + "|dup=" + (S_ControlTreeHideDuplicateAnonymousRoots ? "1" : "0");
     }
 
     ControlTreeOverlayRootsCacheEntry@ _GetControlTreeOverlayRootsCache(uint overlay, uint mobilsLen) {
@@ -139,6 +147,92 @@ namespace Debug {
         return false;
     }
 
+    string _ShortControlTreeRootSigText(const string &in raw, uint maxLen = 24) {
+        string t = CleanUiFormatting(raw).Trim();
+        int maxLenInt = int(maxLen);
+        if (int(t.Length) > maxLenInt) t = t.SubStr(0, maxLenInt) + "...";
+        return t;
+    }
+
+    bool _IsControlTreeAnonymousFrameRoot(CControlBase@ root) {
+        if (root is null) return false;
+        if (cast<CControlFrameStyled>(root) is null && cast<CControlFrame>(root) is null) return false;
+        if (root.IdName.Trim().Length > 0) return false;
+        if (CleanUiFormatting(root.StackText).Trim().Length > 0) return false;
+        if (CleanUiFormatting(ReadText(root)).Trim().Length > 0) return false;
+        return true;
+    }
+
+    class _ControlTreeRootSignatureState {
+        uint budget = 0;
+        string sig = "";
+    }
+
+    void _AppendControlTreeRootSignature(CControlBase@ n, _ControlTreeRootSignatureState@ st, uint depth, uint maxDepth) {
+        if (st is null) return;
+        if (st.budget == 0) {
+            st.sig += "...";
+            return;
+        }
+        if (n is null) {
+            st.sig += "<null>";
+            return;
+        }
+
+        st.budget--;
+
+        string type = NodeTypeName(n);
+        string idName = _ShortControlTreeRootSigText(n.IdName, 18);
+        string stack = _ShortControlTreeRootSigText(n.StackText, 24);
+        string text = _ShortControlTreeRootSigText(ReadText(n), 24);
+        uint childCount = _ChildrenLen(n);
+
+        st.sig += type + "(" + (IsEffectivelyVisible(n) ? "1" : "0") + ":" + childCount;
+        if (idName.Length > 0) st.sig += "#" + idName;
+        if (stack.Length > 0) st.sig += "$" + stack;
+        if (text.Length > 0) st.sig += "\"" + text + "\"";
+
+        if (depth >= maxDepth || childCount == 0) {
+            st.sig += ")";
+            return;
+        }
+
+        st.sig += "[";
+        uint childLimit = childCount;
+        if (childLimit > 6) childLimit = 6;
+        for (uint i = 0; i < childLimit; ++i) {
+            if (i > 0) st.sig += ",";
+            _AppendControlTreeRootSignature(_ChildAt(n, i), st, depth + 1, maxDepth);
+        }
+        if (childCount > childLimit) st.sig += ",+" + (childCount - childLimit);
+        st.sig += "])";
+    }
+
+    string _ControlTreeAnonymousRootSignature(CControlBase@ root) {
+        if (!S_ControlTreeHideDuplicateAnonymousRoots) return "";
+        if (!_IsControlTreeAnonymousFrameRoot(root)) return "";
+
+        _ControlTreeRootSignatureState@ st = _ControlTreeRootSignatureState();
+        st.budget = 48;
+        _AppendControlTreeRootSignature(root, st, 0, 4);
+        return st.sig;
+    }
+
+    bool _TryMarkControlTreeAnonymousRootSignature(CControlBase@ root, dictionary@ seenSigs, bool &out duplicate) {
+        duplicate = false;
+        if (seenSigs is null) return false;
+
+        string sig = _ControlTreeAnonymousRootSignature(root);
+        if (sig.Length == 0) return false;
+        if (seenSigs.Exists(sig)) {
+            duplicate = true;
+            return true;
+        }
+
+        seenSigs.Set(sig, true);
+        return true;
+    }
+
     void _AdvanceControlTreeOverlayRootsCache(CScene2d@ scene, uint overlay, uint maxMobilsToScan) {
         if (scene is null) return;
         uint mobilsLen = scene.Mobils.Length;
@@ -151,8 +245,16 @@ namespace Debug {
         uint scanned = 0;
         while (e.scanIx < mobilsLen && scanned < budget) {
             auto root = _RootFromMobil(scene, e.scanIx);
-            if (_ShouldDisplayControlTreeOverlayRoot(root)) {
-                e.rootIxs.InsertLast(int(e.scanIx));
+            if (!_ShouldDisplayControlTreeOverlayRoot(root)) {
+                e.hiddenNoiseRoots++;
+            } else {
+                bool duplicate = false;
+                _TryMarkControlTreeAnonymousRootSignature(root, @e.anonRootSignatures, duplicate);
+                if (duplicate) {
+                    e.hiddenDuplicateRoots++;
+                } else {
+                    e.rootIxs.InsertLast(int(e.scanIx));
+                }
             }
             e.scanIx++;
             scanned++;
@@ -166,9 +268,13 @@ namespace Debug {
         auto e = _GetControlTreeOverlayRootsCache(overlay, mobilsLen);
         if (e !is null && e.rootIxs.Length > 0) return e.rootIxs[0];
 
+        dictionary seenSigs;
         for (uint i = 0; i < mobilsLen; ++i) {
             auto root = _RootFromMobil(scene, i);
             if (!_ShouldDisplayControlTreeOverlayRoot(root)) continue;
+            bool duplicate = false;
+            _TryMarkControlTreeAnonymousRootSignature(root, @seenSigs, duplicate);
+            if (duplicate) continue;
             return int(i);
         }
         return -1;
@@ -278,14 +384,27 @@ namespace Debug {
         bool hasRoots = true;
         bool rootCountExact = false;
         uint rootCount = 0;
+        uint hiddenNoiseCount = 0;
+        uint hiddenDuplicateCount = 0;
 
         string overlayUi = "O" + overlay;
         if (filter.Length > 0) {
             hasRoots = false;
             bool overlayHasMatch = false;
+            dictionary seenSigs;
             for (uint i = 0; i < rootsLen; ++i) {
                 auto root = _RootFromMobil(scene, i);
                 if (root is null) continue;
+                if (!_ShouldDisplayControlTreeOverlayRoot(root)) {
+                    hiddenNoiseCount++;
+                    continue;
+                }
+                bool duplicate = false;
+                _TryMarkControlTreeAnonymousRootSignature(root, @seenSigs, duplicate);
+                if (duplicate) {
+                    hiddenDuplicateCount++;
+                    continue;
+                }
                 hasRoots = true;
                 rootCount++;
                 string rootPath = "root[" + i + "]";
@@ -293,14 +412,19 @@ namespace Debug {
                 string rootDisplay = "overlay[" + overlay + "]/" + rootPath;
                 if (_ControlTreeSubtreeMatchesCached(root, rootUi, rootDisplay, filter, searchTerms)) {
                     overlayHasMatch = true;
-                    break;
                 }
             }
             if (!overlayHasMatch) return;
             rootCountExact = true;
         } else if (_IsControlTreeTreeOpen(overlayUi)) {
             _AdvanceControlTreeOverlayRootsCache(scene, overlay, S_ControlTreeOverlayRootScanBudget);
-            if (rootsCache !is null && rootsCache.complete) hasRoots = rootsCache.rootIxs.Length > 0;
+            if (rootsCache !is null) {
+                rootCount = rootsCache.rootIxs.Length;
+                hiddenNoiseCount = rootsCache.hiddenNoiseRoots;
+                hiddenDuplicateCount = rootsCache.hiddenDuplicateRoots;
+                rootCountExact = rootsCache.complete;
+                if (rootsCache.complete) hasRoots = rootsCache.rootIxs.Length > 0;
+            }
         }
 
         g_ControlTreeRowsRendered++;
@@ -340,8 +464,17 @@ namespace Debug {
         }
         UI::SameLine();
 
+        bool hasPartialCounts = filter.Length == 0
+            && rootsCache !is null
+            && _IsControlTreeTreeOpen(overlayUi)
+            && !rootsCache.complete
+            && (rootCount > 0 || hiddenNoiseCount > 0 || hiddenDuplicateCount > 0);
+        string approxSuffix = hasPartialCounts ? "+" : "";
+
         string overlayMeta = "mobils: " + rootsLen;
-        if (rootCountExact) overlayMeta += ", roots: " + rootCount;
+        if (rootCountExact || hasPartialCounts) overlayMeta += ", shown: " + rootCount + approxSuffix;
+        if (hiddenNoiseCount > 0) overlayMeta += ", hidden empty: " + hiddenNoiseCount + approxSuffix;
+        if (hiddenDuplicateCount > 0) overlayMeta += ", hidden dup: " + hiddenDuplicateCount + approxSuffix;
         string overlayLabel = _LayerTextColorCode(overlay)
             + "Overlay[" + overlay + "] \\$999(" + overlayMeta + ")\\$z";
         bool viewed = (g_ControlTreeOverlay >= 0 && g_ControlTreeOverlay == int(overlay));
@@ -365,7 +498,9 @@ namespace Debug {
         }
         if (UI::BeginPopup(overlayPopupId)) {
             string popupLabel = "Overlay[" + overlay + "] | mobils: " + rootsLen;
-            if (rootCountExact) popupLabel += " | roots: " + rootCount;
+            if (rootCountExact || hasPartialCounts) popupLabel += " | shown: " + rootCount + approxSuffix;
+            if (hiddenNoiseCount > 0) popupLabel += " | hidden empty: " + hiddenNoiseCount + approxSuffix;
+            if (hiddenDuplicateCount > 0) popupLabel += " | hidden dup: " + hiddenDuplicateCount + approxSuffix;
             UI::Text(popupLabel);
             UI::Separator();
             if (UI::MenuItem("Focus this overlay")) g_ControlTreeOverlay = int(overlay);
@@ -414,11 +549,15 @@ namespace Debug {
             }
             return;
         }
+        dictionary seenSigs;
         for (uint i = 0; i < rootsLen; ++i) {
             if (g_ControlTreeRowsTruncated) break;
             auto root = _RootFromMobil(scene, i);
             if (root is null) continue;
             if (!_ShouldDisplayControlTreeOverlayRoot(root)) continue;
+            bool duplicate = false;
+            _TryMarkControlTreeAnonymousRootSignature(root, @seenSigs, duplicate);
+            if (duplicate) continue;
             string rootPath = "root[" + i + "]";
             string rootUi = overlayUi + "/" + rootPath;
             string rootDisplay = "overlay[" + overlay + "]/" + rootPath;
