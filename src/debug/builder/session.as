@@ -238,6 +238,276 @@ namespace Builder {
         return m;
     }
 
+    bool _ComputeBuilderParentAbsBasis(const BuilderDocument@ doc, int nodeIx, vec2 &out parentAbsPos, float &out parentAbsScale) {
+        parentAbsPos = vec2();
+        parentAbsScale = 1.0f;
+
+        if (doc is null) return false;
+        if (nodeIx < 0 || nodeIx >= int(doc.nodes.Length)) return false;
+
+        auto self = doc.nodes[uint(nodeIx)];
+        if (self is null || self.typed is null) return false;
+
+        array<int> chain;
+        int cur = self.parentIx;
+        int guard = 0;
+        while (cur >= 0 && cur < int(doc.nodes.Length) && guard < 512) {
+            guard++;
+            chain.InsertLast(cur);
+            auto n = doc.nodes[uint(cur)];
+            if (n is null) break;
+            cur = n.parentIx;
+        }
+
+        for (int i = int(chain.Length) - 1; i >= 0; --i) {
+            int ix = chain[uint(i)];
+            auto n = doc.nodes[uint(ix)];
+            if (n is null || n.typed is null) return false;
+            parentAbsPos = parentAbsPos + n.typed.pos * parentAbsScale;
+            parentAbsScale *= n.typed.scale;
+        }
+
+        return true;
+    }
+
+    bool _ComputeBuilderNodeLocalPosClamp(const BuilderDocument@ doc, int nodeIx, const vec2 &in screenHalfExtents,
+                                          vec2 &out minPos, vec2 &out maxPos, float offscreenMargin = 0.0f) {
+        minPos = vec2();
+        maxPos = vec2();
+
+        if (doc is null) return false;
+        if (nodeIx < 0 || nodeIx >= int(doc.nodes.Length)) return false;
+
+        auto node = doc.nodes[uint(nodeIx)];
+        if (node is null || node.typed is null) return false;
+
+        vec2 parentAbsPos = vec2();
+        float parentAbsScale = 1.0f;
+        if (!_ComputeBuilderParentAbsBasis(doc, nodeIx, parentAbsPos, parentAbsScale)) return false;
+
+        float denom = parentAbsScale;
+        if (Math::Abs(denom) < 0.0001f) return false;
+
+        float selfAbsScale = Math::Abs(parentAbsScale * node.typed.scale);
+        float anchorX = _AnchorXFromHAlign(node.typed.hAlign);
+        float anchorY = _AnchorYFromVAlign(node.typed.vAlign);
+
+        vec2 absSize = node.typed.size * selfAbsScale;
+        float minAbsX = -screenHalfExtents.x - offscreenMargin + anchorX * absSize.x;
+        float maxAbsX = screenHalfExtents.x + offscreenMargin - (1.0f - anchorX) * absSize.x;
+        float minAbsY = -screenHalfExtents.y - offscreenMargin + (1.0f - anchorY) * absSize.y;
+        float maxAbsY = screenHalfExtents.y + offscreenMargin - anchorY * absSize.y;
+
+        if (minAbsX > maxAbsX) {
+            float mid = (minAbsX + maxAbsX) * 0.5f;
+            minAbsX = mid;
+            maxAbsX = mid;
+        }
+        if (minAbsY > maxAbsY) {
+            float mid = (minAbsY + maxAbsY) * 0.5f;
+            minAbsY = mid;
+            maxAbsY = mid;
+        }
+
+        minPos = vec2((minAbsX - parentAbsPos.x) / denom, (minAbsY - parentAbsPos.y) / denom);
+        maxPos = vec2((maxAbsX - parentAbsPos.x) / denom, (maxAbsY - parentAbsPos.y) / denom);
+
+        if (minPos.x > maxPos.x) {
+            float tmp = minPos.x;
+            minPos.x = maxPos.x;
+            maxPos.x = tmp;
+        }
+        if (minPos.y > maxPos.y) {
+            float tmp = minPos.y;
+            minPos.y = maxPos.y;
+            maxPos.y = tmp;
+        }
+        return true;
+    }
+
+    vec2 ClampBuilderNodeLocalPosToScreen(const BuilderDocument@ doc, int nodeIx, const vec2 &in requestedPos,
+                                          const vec2 &in screenHalfExtents, float offscreenMargin = 0.0f) {
+        vec2 minPos = vec2();
+        vec2 maxPos = vec2();
+        if (!_ComputeBuilderNodeLocalPosClamp(doc, nodeIx, screenHalfExtents, minPos, maxPos, offscreenMargin)) return requestedPos;
+
+        vec2 clamped = requestedPos;
+        clamped.x = Math::Clamp(clamped.x, minPos.x, maxPos.x);
+        clamped.y = Math::Clamp(clamped.y, minPos.y, maxPos.y);
+        return clamped;
+    }
+
+    void _ClearBuilderStickyGuides() {
+        g_BuilderStickyGuides.active = false;
+        g_BuilderStickyGuides.verticals.Resize(0);
+        g_BuilderStickyGuides.horizontals.Resize(0);
+    }
+
+    void _SetBuilderStickyGuides(const vec2 &in screenHalfExtents, float offscreenMargin,
+                                 const array<float> &in verticals, const array<float> &in horizontals) {
+        g_BuilderStickyGuides.screenHalfExtents = screenHalfExtents;
+        g_BuilderStickyGuides.offscreenMargin = offscreenMargin;
+        g_BuilderStickyGuides.verticals = verticals;
+        g_BuilderStickyGuides.horizontals = horizontals;
+        g_BuilderStickyGuides.active = verticals.Length > 0 || horizontals.Length > 0;
+    }
+
+    bool _IsAncestorInDoc(const BuilderDocument@ doc, int nodeIx, int maybeAncestor) {
+        if (doc is null) return false;
+        if (nodeIx < 0 || maybeAncestor < 0) return false;
+        if (nodeIx >= int(doc.nodes.Length) || maybeAncestor >= int(doc.nodes.Length)) return false;
+
+        int cur = nodeIx;
+        int guard = 0;
+        while (cur >= 0 && cur < int(doc.nodes.Length) && guard < 512) {
+            guard++;
+            if (cur == maybeAncestor) return true;
+            auto n = doc.nodes[uint(cur)];
+            if (n is null) break;
+            cur = n.parentIx;
+        }
+        return false;
+    }
+
+    void _AddBuilderGuideUnique(array<float> &inout guides, float value, float eps = 0.05f) {
+        for (uint i = 0; i < guides.Length; ++i) {
+            if (Math::Abs(guides[i] - value) <= eps) return;
+        }
+        guides.InsertLast(value);
+    }
+
+    void _CollectBuilderStickyGuides(const BuilderDocument@ doc, int nodeIx, const vec2 &in screenHalfExtents,
+                                     bool includeScreen, bool includeNodes,
+                                     array<float> &out verticals, array<float> &out horizontals) {
+        verticals.Resize(0);
+        horizontals.Resize(0);
+
+        if (includeScreen) {
+            _AddBuilderGuideUnique(verticals, -screenHalfExtents.x);
+            _AddBuilderGuideUnique(verticals, 0.0f);
+            _AddBuilderGuideUnique(verticals, screenHalfExtents.x);
+            _AddBuilderGuideUnique(horizontals, -screenHalfExtents.y);
+            _AddBuilderGuideUnique(horizontals, 0.0f);
+            _AddBuilderGuideUnique(horizontals, screenHalfExtents.y);
+        }
+
+        if (!includeNodes || doc is null) return;
+
+        for (uint i = 0; i < doc.nodes.Length; ++i) {
+            int otherIx = int(i);
+            if (otherIx == nodeIx) continue;
+            if (_IsAncestorInDoc(doc, otherIx, nodeIx)) continue;
+
+            auto metrics = ComputeAbsMetrics(doc, otherIx);
+            if (metrics is null || !metrics.ok) continue;
+            if (metrics.selfHidden || metrics.hiddenByAncestor) continue;
+
+            _AddBuilderGuideUnique(verticals, metrics.boundsMin.x);
+            _AddBuilderGuideUnique(verticals, (metrics.boundsMin.x + metrics.boundsMax.x) * 0.5f);
+            _AddBuilderGuideUnique(verticals, metrics.boundsMax.x);
+
+            _AddBuilderGuideUnique(horizontals, metrics.boundsMin.y);
+            _AddBuilderGuideUnique(horizontals, (metrics.boundsMin.y + metrics.boundsMax.y) * 0.5f);
+            _AddBuilderGuideUnique(horizontals, metrics.boundsMax.y);
+        }
+    }
+
+    bool _ResolveBuilderAxisSnap(float absPos, float absSize, float anchor, const array<float> &in guides, float threshold,
+                                 float &out snappedAbsPos, float &out snappedGuide) {
+        snappedAbsPos = absPos;
+        snappedGuide = 0.0f;
+        if (threshold <= 0.0f || guides.Length == 0) return false;
+
+        float minEdge = absPos - anchor * absSize;
+        float center = minEdge + absSize * 0.5f;
+        float maxEdge = minEdge + absSize;
+
+        bool found = false;
+        float bestDelta = 0.0f;
+        float bestAbs = threshold + 0.0001f;
+
+        for (uint i = 0; i < guides.Length; ++i) {
+            float guide = guides[i];
+
+            float deltaMin = guide - minEdge;
+            float absMin = Math::Abs(deltaMin);
+            if (absMin <= threshold && absMin < bestAbs) {
+                found = true;
+                bestAbs = absMin;
+                bestDelta = deltaMin;
+                snappedGuide = guide;
+            }
+
+            float deltaCenter = guide - center;
+            float absCenter = Math::Abs(deltaCenter);
+            if (absCenter <= threshold && absCenter < bestAbs) {
+                found = true;
+                bestAbs = absCenter;
+                bestDelta = deltaCenter;
+                snappedGuide = guide;
+            }
+
+            float deltaMax = guide - maxEdge;
+            float absMax = Math::Abs(deltaMax);
+            if (absMax <= threshold && absMax < bestAbs) {
+                found = true;
+                bestAbs = absMax;
+                bestDelta = deltaMax;
+                snappedGuide = guide;
+            }
+        }
+
+        if (!found) return false;
+        snappedAbsPos = absPos + bestDelta;
+        return true;
+    }
+
+    vec2 ResolveBuilderNodeSliderPos(const BuilderDocument@ doc, int nodeIx, const vec2 &in requestedPos,
+                                     const vec2 &in screenHalfExtents, float offscreenMargin,
+                                     bool stickyEnabled, bool stickyToScreen, bool stickyToNodes, float stickyThreshold,
+                                     array<float> @verticalGuides = null, array<float> @horizontalGuides = null) {
+        if (verticalGuides !is null) verticalGuides.Resize(0);
+        if (horizontalGuides !is null) horizontalGuides.Resize(0);
+
+        vec2 resolved = ClampBuilderNodeLocalPosToScreen(doc, nodeIx, requestedPos, screenHalfExtents, offscreenMargin);
+        if (!stickyEnabled || stickyThreshold <= 0.0f) return resolved;
+
+        if (doc is null || nodeIx < 0 || nodeIx >= int(doc.nodes.Length)) return resolved;
+        auto node = doc.nodes[uint(nodeIx)];
+        if (node is null || node.typed is null) return resolved;
+
+        vec2 parentAbsPos = vec2();
+        float parentAbsScale = 1.0f;
+        if (!_ComputeBuilderParentAbsBasis(doc, nodeIx, parentAbsPos, parentAbsScale)) return resolved;
+        if (Math::Abs(parentAbsScale) < 0.0001f) return resolved;
+
+        float absScale = Math::Abs(parentAbsScale * node.typed.scale);
+        float anchorX = _AnchorXFromHAlign(node.typed.hAlign);
+        float anchorY = _AnchorYFromVAlign(node.typed.vAlign);
+        vec2 absSize = node.typed.size * absScale;
+        vec2 absPos = parentAbsPos + resolved * parentAbsScale;
+
+        array<float> candidateVerticals;
+        array<float> candidateHorizontals;
+        _CollectBuilderStickyGuides(doc, nodeIx, screenHalfExtents, stickyToScreen, stickyToNodes, candidateVerticals, candidateHorizontals);
+
+        float snappedAbsX = absPos.x;
+        float snappedGuideX = 0.0f;
+        if (_ResolveBuilderAxisSnap(absPos.x, absSize.x, anchorX, candidateVerticals, stickyThreshold, snappedAbsX, snappedGuideX)) {
+            resolved.x = (snappedAbsX - parentAbsPos.x) / parentAbsScale;
+            if (verticalGuides !is null) _AddBuilderGuideUnique(verticalGuides, snappedGuideX);
+        }
+
+        float snappedAbsY = absPos.y;
+        float snappedGuideY = 0.0f;
+        if (_ResolveBuilderAxisSnap(absPos.y, absSize.y, anchorY, candidateHorizontals, stickyThreshold, snappedAbsY, snappedGuideY)) {
+            resolved.y = (snappedAbsY - parentAbsPos.y) / parentAbsScale;
+            if (horizontalGuides !is null) _AddBuilderGuideUnique(horizontalGuides, snappedGuideY);
+        }
+
+        return ClampBuilderNodeLocalPosToScreen(doc, nodeIx, resolved, screenHalfExtents, offscreenMargin);
+    }
+
     bool _BuilderBoundsSame(const BuilderAbsMetrics@ a, const BuilderAbsMetrics@ b, float eps = 0.01f) {
         if (a is null || b is null) return false;
         if (!a.ok || !b.ok) return false;
@@ -1949,6 +2219,31 @@ namespace Builder {
         doc.nodes.InsertLast(_MakeOverlayLabel("__uinav_dbg_sel_lbl", vec2(center.x, maxP.y + 6.0f), vec2(260, 6), lbl, "ff0", 1.5f, 10003.0f));
     }
 
+    void _AppendPreviewStickyGuideOverlayNodes(BuilderDocument@ doc) {
+        if (doc is null) return;
+        if (!S_BuilderStickySnapGuidesEnabled || !g_BuilderStickyGuides.active) return;
+
+        vec2 half = g_BuilderStickyGuides.screenHalfExtents;
+        float margin = g_BuilderStickyGuides.offscreenMargin;
+        float fullW = (half.x + margin) * 2.0f;
+        float fullH = (half.y + margin) * 2.0f;
+        float t = 0.45f;
+        string color = "6ff";
+        float zBase = 10010.0f;
+
+        for (uint i = 0; i < g_BuilderStickyGuides.verticals.Length; ++i) {
+            float x = g_BuilderStickyGuides.verticals[i];
+            doc.nodes.InsertLast(_MakeOverlayQuad("__uinav_dbg_snap_v_" + i, vec2(x, 0.0f), vec2(t, fullH), color, 0.90f, zBase));
+            doc.nodes.InsertLast(_MakeOverlayLabel("__uinav_dbg_snap_vlbl_" + i, vec2(x, half.y + margin + 4.0f), vec2(48, 6), "X", color, 1.3f, zBase + 0.2f));
+        }
+
+        for (uint i = 0; i < g_BuilderStickyGuides.horizontals.Length; ++i) {
+            float y = g_BuilderStickyGuides.horizontals[i];
+            doc.nodes.InsertLast(_MakeOverlayQuad("__uinav_dbg_snap_h_" + i, vec2(0.0f, y), vec2(fullW, t), color, 0.90f, zBase));
+            doc.nodes.InsertLast(_MakeOverlayLabel("__uinav_dbg_snap_hlbl_" + i, vec2(half.x + margin + 6.0f, y), vec2(48, 6), "Y", color, 1.3f, zBase + 0.2f));
+        }
+    }
+
     void _ClearRedo() {
         g_RedoSnapshots.Resize(0);
     }
@@ -2007,6 +2302,165 @@ namespace Builder {
             if (n !is null && n.parentIx < 0) c++;
         }
         return c;
+    }
+
+    int _FirstRootNodeIx(const BuilderDocument@ doc) {
+        if (doc is null) return -1;
+        for (uint i = 0; i < doc.nodes.Length; ++i) {
+            auto n = doc.nodes[i];
+            if (n !is null && n.parentIx < 0) return int(i);
+        }
+        return -1;
+    }
+
+    bool _GetNodeSiblingContext(int nodeIx, int &out parentIx, int &out siblingPos, int &out siblingCount) {
+        _EnsureDoc();
+        parentIx = -1;
+        siblingPos = -1;
+        siblingCount = 0;
+
+        if (nodeIx < 0 || nodeIx >= int(g_Doc.nodes.Length)) return false;
+        auto node = g_Doc.nodes[uint(nodeIx)];
+        if (node is null) return false;
+
+        parentIx = node.parentIx;
+        if (parentIx >= 0) {
+            auto parent = g_Doc.nodes[uint(parentIx)];
+            if (parent is null) return false;
+
+            siblingCount = int(parent.childIx.Length);
+            for (uint i = 0; i < parent.childIx.Length; ++i) {
+                if (parent.childIx[i] == nodeIx) {
+                    siblingPos = int(i);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        for (uint i = 0; i < g_Doc.nodes.Length; ++i) {
+            auto maybeRoot = g_Doc.nodes[i];
+            if (maybeRoot is null || maybeRoot.parentIx >= 0) continue;
+            if (int(i) == nodeIx) siblingPos = siblingCount;
+            siblingCount++;
+        }
+        return siblingPos >= 0;
+    }
+
+    bool _CanMoveNodeSiblingOrderDelta(int nodeIx, int delta) {
+        int parentIx = -1;
+        int siblingPos = -1;
+        int siblingCount = 0;
+        if (!_GetNodeSiblingContext(nodeIx, parentIx, siblingPos, siblingCount)) return false;
+
+        int targetPos = siblingPos + delta;
+        return targetPos >= 0 && targetPos < siblingCount;
+    }
+
+    bool _ReorderDocumentNodes(const array<int> &in order) {
+        _EnsureDoc();
+        if (order.Length != g_Doc.nodes.Length) return false;
+
+        array<bool> seen;
+        seen.Resize(order.Length);
+        for (uint i = 0; i < seen.Length; ++i) seen[i] = false;
+
+        array<int> remap;
+        remap.Resize(order.Length);
+        for (uint i = 0; i < remap.Length; ++i) remap[i] = -1;
+
+        array<BuilderNode@> newNodes;
+        for (uint newIx = 0; newIx < order.Length; ++newIx) {
+            int oldIx = order[newIx];
+            if (oldIx < 0 || oldIx >= int(g_Doc.nodes.Length)) return false;
+            if (seen[uint(oldIx)]) return false;
+
+            seen[uint(oldIx)] = true;
+            remap[uint(oldIx)] = int(newIx);
+            newNodes.InsertLast(_CloneNode(g_Doc.nodes[uint(oldIx)]));
+        }
+
+        for (uint i = 0; i < newNodes.Length; ++i) {
+            auto node = newNodes[i];
+            if (node is null) continue;
+
+            if (node.parentIx >= 0) {
+                if (node.parentIx >= int(remap.Length)) return false;
+                int mappedParent = remap[uint(node.parentIx)];
+                if (mappedParent < 0) return false;
+                node.parentIx = mappedParent;
+            }
+
+            array<int> children;
+            for (uint c = 0; c < node.childIx.Length; ++c) {
+                int oldChildIx = node.childIx[c];
+                if (oldChildIx < 0 || oldChildIx >= int(remap.Length)) return false;
+                int mappedChild = remap[uint(oldChildIx)];
+                if (mappedChild < 0) return false;
+                children.InsertLast(mappedChild);
+            }
+            node.childIx = children;
+        }
+
+        int oldSelectedIx = g_SelectedNodeIx;
+        int oldBoundsTargetIx = g_BoundsTargetNodeIx;
+        int oldRootIx = g_Doc.rootIx;
+
+        g_Doc.nodes = newNodes;
+
+        g_SelectedNodeIx = (oldSelectedIx >= 0 && oldSelectedIx < int(remap.Length))
+            ? remap[uint(oldSelectedIx)]
+            : -1;
+        g_BoundsTargetNodeIx = (oldBoundsTargetIx >= 0 && oldBoundsTargetIx < int(remap.Length))
+            ? remap[uint(oldBoundsTargetIx)]
+            : -1;
+        g_Doc.rootIx = (oldRootIx >= 0 && oldRootIx < int(remap.Length))
+            ? remap[uint(oldRootIx)]
+            : -1;
+        if (g_Doc.rootIx < 0 || g_Doc.rootIx >= int(g_Doc.nodes.Length)) {
+            g_Doc.rootIx = _FirstRootNodeIx(g_Doc);
+        } else {
+            auto root = g_Doc.nodes[uint(g_Doc.rootIx)];
+            if (root is null || root.parentIx >= 0) g_Doc.rootIx = _FirstRootNodeIx(g_Doc);
+        }
+
+        _RebuildNodeIndex(g_Doc);
+        return true;
+    }
+
+    bool _MoveRootNodeSiblingOrder(int nodeIx, int delta) {
+        int parentIx = -1;
+        int siblingPos = -1;
+        int siblingCount = 0;
+        if (!_GetNodeSiblingContext(nodeIx, parentIx, siblingPos, siblingCount)) return false;
+        if (parentIx >= 0) return false;
+
+        int targetPos = siblingPos + delta;
+        if (targetPos < 0 || targetPos >= siblingCount) return false;
+
+        array<int> rootIxs;
+        for (uint i = 0; i < g_Doc.nodes.Length; ++i) {
+            auto n = g_Doc.nodes[i];
+            if (n is null || n.parentIx >= 0) continue;
+            rootIxs.InsertLast(int(i));
+        }
+        if (targetPos < 0 || targetPos >= int(rootIxs.Length)) return false;
+
+        int targetRootIx = rootIxs[uint(targetPos)];
+        if (targetRootIx == nodeIx) return true;
+
+        array<int> order;
+        order.Resize(g_Doc.nodes.Length);
+        for (uint i = 0; i < order.Length; ++i) order[i] = int(i);
+        int tmp = order[uint(nodeIx)];
+        order[uint(nodeIx)] = order[uint(targetRootIx)];
+        order[uint(targetRootIx)] = tmp;
+
+        _PushUndoSnapshot();
+        if (!_ReorderDocumentNodes(order)) return false;
+        _UpdateDirtyState();
+        _QueueAutoPreview();
+        return true;
     }
 
     void _InitAuthoringDefaults(BuilderNode@ n, int siblingCount = 0) {
@@ -2203,12 +2657,25 @@ namespace Builder {
         return false;
     }
 
-    bool MoveNode(int nodeIx, int newParentIx) {
+    bool _CanMoveNodeTo(int nodeIx, int newParentIx) {
         _EnsureDoc();
         if (nodeIx < 0 || nodeIx >= int(g_Doc.nodes.Length)) return false;
         if (newParentIx >= int(g_Doc.nodes.Length)) return false;
         if (newParentIx == nodeIx) return false;
         if (newParentIx >= 0 && _IsAncestor(newParentIx, nodeIx)) return false;
+
+        auto node = g_Doc.nodes[uint(nodeIx)];
+        if (node is null) return false;
+        if (newParentIx >= 0) {
+            auto parent = g_Doc.nodes[uint(newParentIx)];
+            if (!_NodeCanContainChildren(parent)) return false;
+        }
+        return true;
+    }
+
+    bool MoveNode(int nodeIx, int newParentIx) {
+        _EnsureDoc();
+        if (!_CanMoveNodeTo(nodeIx, newParentIx)) return false;
 
         auto node = g_Doc.nodes[uint(nodeIx)];
         if (node is null) return false;
@@ -2238,6 +2705,110 @@ namespace Builder {
         _UpdateDirtyState();
         _QueueAutoPreview();
         g_Status = "Moved node.";
+        return true;
+    }
+
+    bool MoveNodeToRootAction(int nodeIx) {
+        _EnsureDoc();
+        if (nodeIx < 0 || nodeIx >= int(g_Doc.nodes.Length)) {
+            g_Status = "Move failed: invalid node.";
+            return false;
+        }
+
+        auto node = g_Doc.nodes[uint(nodeIx)];
+        if (node is null) {
+            g_Status = "Move failed: node is unavailable.";
+            return false;
+        }
+        if (node.parentIx < 0) {
+            g_Status = "Node is already at root.";
+            return false;
+        }
+
+        if (!MoveNode(nodeIx, -1)) {
+            g_Status = "Move failed (invalid parent or cycle).";
+            return false;
+        }
+
+        g_Status = "Moved node to root.";
+        return true;
+    }
+
+    bool MoveNodeOutOneLevel(int nodeIx) {
+        _EnsureDoc();
+        if (nodeIx < 0 || nodeIx >= int(g_Doc.nodes.Length)) {
+            g_Status = "Move failed: invalid node.";
+            return false;
+        }
+
+        auto node = g_Doc.nodes[uint(nodeIx)];
+        if (node is null) {
+            g_Status = "Move failed: node is unavailable.";
+            return false;
+        }
+        if (node.parentIx < 0) {
+            g_Status = "Node is already at root.";
+            return false;
+        }
+
+        auto parent = g_Doc.nodes[uint(node.parentIx)];
+        int grandParentIx = parent is null ? -1 : parent.parentIx;
+        if (!MoveNode(nodeIx, grandParentIx)) {
+            g_Status = "Move failed (invalid parent or cycle).";
+            return false;
+        }
+
+        g_Status = grandParentIx >= 0
+            ? ("Moved node out one level under [" + grandParentIx + "].")
+            : "Moved node to root.";
+        return true;
+    }
+
+    bool MoveNodeSiblingOrder(int nodeIx, int delta) {
+        _EnsureDoc();
+        if (delta == 0) return true;
+
+        int parentIx = -1;
+        int siblingPos = -1;
+        int siblingCount = 0;
+        if (!_GetNodeSiblingContext(nodeIx, parentIx, siblingPos, siblingCount)) {
+            g_Status = "Move failed: node is not in a sibling list.";
+            return false;
+        }
+
+        int targetPos = siblingPos + delta;
+        if (targetPos < 0) {
+            g_Status = "Node is already first among siblings.";
+            return false;
+        }
+        if (targetPos >= siblingCount) {
+            g_Status = "Node is already last among siblings.";
+            return false;
+        }
+
+        if (parentIx < 0) {
+            if (!_MoveRootNodeSiblingOrder(nodeIx, delta)) {
+                g_Status = "Move failed: could not reorder root nodes.";
+                return false;
+            }
+        } else {
+            auto parent = g_Doc.nodes[uint(parentIx)];
+            if (parent is null) {
+                g_Status = "Move failed: parent is unavailable.";
+                return false;
+            }
+
+            _PushUndoSnapshot();
+            int movingIx = parent.childIx[uint(siblingPos)];
+            parent.childIx.RemoveAt(uint(siblingPos));
+            parent.childIx.InsertAt(uint(targetPos), movingIx);
+            _UpdateDirtyState();
+            _QueueAutoPreview();
+        }
+
+        g_Status = delta < 0
+            ? "Moved node up among siblings."
+            : "Moved node down among siblings.";
         return true;
     }
 
@@ -2438,6 +3009,10 @@ namespace Builder {
                 node.typed.clipActive = f.ClipWindowActive;
                 node.typed.clipPos = f.ClipWindowRelativePosition;
                 node.typed.clipSize = f.ClipWindowSize;
+                node.typed.clipPosExplicit = node.typed.clipActive
+                    && (Math::Abs(node.typed.clipPos.x) > 0.001f || Math::Abs(node.typed.clipPos.y) > 0.001f);
+                node.typed.clipSizeExplicit = node.typed.clipActive
+                    && (Math::Abs(node.typed.clipSize.x) > 0.001f || Math::Abs(node.typed.clipSize.y) > 0.001f);
             }
         } else if (kind == "quad") {
             auto q = cast<CGameManialinkQuad@>(live);
@@ -2521,6 +3096,31 @@ namespace Builder {
         return ix;
     }
 
+    int _AppendLiveLayerTreeRoots(BuilderDocument@ doc, CGameManialinkFrame@ mainFrame, _LiveTreeCloneState@ st) {
+        if (doc is null || st is null || mainFrame is null) return 0;
+
+        int appended = 0;
+        bool appendedChild = false;
+        try {
+            for (uint i = 0; i < mainFrame.Controls.Length; ++i) {
+                auto ch = mainFrame.Controls[i];
+                if (ch is null) continue;
+                int ix = _AppendLiveTreeNode(doc, ch, -1, 0, st);
+                if (ix >= 0) {
+                    appended++;
+                    appendedChild = true;
+                }
+            }
+        } catch {
+            appendedChild = false;
+        }
+
+        if (appendedChild) return appended;
+
+        int rootIx = _AppendLiveTreeNode(doc, mainFrame, -1, 0, st);
+        return rootIx >= 0 ? 1 : 0;
+    }
+
     bool ImportFromLiveLayerTree(int appKind, int layerIx) {
         auto layer = _GetLayerByKindIx(appKind, layerIx);
         if (layer is null) {
@@ -2535,9 +3135,14 @@ namespace Builder {
         auto doc = _NewDocument();
         doc.sourceKind = "import_live_tree";
         doc.sourceLabel = "app=" + appKind + " layer=" + layerIx;
+        doc.originalXml = _GetLayerXml(layer);
 
         auto st = _LiveTreeCloneState();
-        _AppendLiveTreeNode(doc, layer.LocalPage.MainFrame, -1, 0, st);
+        int appendedRoots = _AppendLiveLayerTreeRoots(doc, layer.LocalPage.MainFrame, st);
+        if (appendedRoots <= 0) {
+            g_Status = "Clone failed: live tree produced no nodes.";
+            return false;
+        }
         if (st.truncated) {
             _AddDiag(doc, "clone.truncated", "warn", "Live tree clone truncated at node/depth budget.");
         }
@@ -2551,7 +3156,7 @@ namespace Builder {
         g_Doc.dirty = false;
         g_LastExportXml = g_BaselineXml;
         _QueueAutoPreview();
-        g_Status = "Cloned live tree: " + g_Doc.nodes.Length + " nodes."
+        g_Status = "Cloned live tree: " + g_Doc.nodes.Length + " nodes across " + appendedRoots + " root(s)."
             + (strippedClip > 0 ? (" Stripped clipping on " + strippedClip + " frame(s).") : "")
             + (S_CenterImportedLiveCopy ? (centered ? " Centered." : " Centering skipped.") : "");
         return true;
@@ -2638,6 +3243,7 @@ namespace Builder {
         bool wantClone = S_PreviewDebugOverlayEnabled
             || S_PreviewSelectedBoundsOverlayEnabled
             || S_PreviewSelectedParentBoundsOverlayEnabled
+            || (S_BuilderStickySnapGuidesEnabled && g_BuilderStickyGuides.active)
             || S_PreviewSanitizeInvalidTags
             || S_PreviewOmitGenericCommonAttrs
             || g_PreviewForceFitOnce;
@@ -2721,6 +3327,7 @@ namespace Builder {
             _AppendPreviewSelectedParentOverlayNodes(tmp, previewDoc, g_SelectedNodeIx, selAbs);
         }
         if (tmp !is null && S_PreviewSelectedBoundsOverlayEnabled && selAbs !is null && selAbs.ok) _AppendPreviewSelectedOverlayNodes(tmp, selAbs);
+        if (tmp !is null && S_BuilderStickySnapGuidesEnabled && g_BuilderStickyGuides.active) _AppendPreviewStickyGuideOverlayNodes(tmp);
 
         string xml = ExportToXml(previewDoc);
         if (xml.Length == 0) {

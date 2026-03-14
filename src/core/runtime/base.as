@@ -90,22 +90,43 @@ namespace UiNav {
         return n !is null && n.IsVisible && !n.IsHiddenExternal;
     }
 
-    string ReadText(CControlBase@ n) {
-        if (n is null) return "";
+    bool TryReadText(CControlBase@ n, string &out text) {
+        text = "";
+        if (n is null) return false;
 
         CControlEntry@ e = cast<CControlEntry>(n);
-        if (e !is null) return e.String;
+        if (e !is null) {
+            text = e.String;
+            return true;
+        }
 
         CControlFrame@ f = cast<CControlFrame>(n);
         if (f !is null) {
             CControlEntry@ e2 = cast<CControlEntry>(f.Nod);
-            if (e2 !is null) return e2.String;
+            if (e2 !is null) {
+                text = e2.String;
+                return true;
+            }
         }
 
         CControlLabel@ lbl = cast<CControlLabel>(n);
-        if (lbl !is null) return lbl.Label;
+        if (lbl !is null) {
+            text = lbl.Label;
+            return true;
+        }
 
-        return "";
+        return false;
+    }
+
+    bool HasReadableText(CControlBase@ n) {
+        string text;
+        return TryReadText(n, text);
+    }
+
+    string ReadText(CControlBase@ n) {
+        string text;
+        if (!TryReadText(n, text)) return "";
+        return text;
     }
 
     string CleanUiFormatting(const string &in s) {

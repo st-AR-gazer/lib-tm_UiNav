@@ -33,6 +33,9 @@ namespace UiNav {
     import bool ValidateRef(NodeRef@ r) from "UiNav";
 
     import bool IsEffectivelyVisible(CControlBase@ n) from "UiNav";
+    import bool HasReadableText(CControlBase@ n) from "UiNav";
+    import bool CanClick(CControlBase@ n, bool childFallback = true) from "UiNav";
+    import bool CanSetText(CControlBase@ n) from "UiNav";
     import string CleanUiFormatting(const string &in s) from "UiNav";
 
     import uint ContextEpoch() from "UiNav";
@@ -120,6 +123,9 @@ namespace UiNav { namespace ML {
 
     import bool IsVisibleSelf(CGameManialinkControl@ n) from "UiNav";
     import bool IsEffectivelyVisible(CGameManialinkControl@ n) from "UiNav";
+    import bool HasReadableText(CGameManialinkControl@ n) from "UiNav";
+    import bool CanClick(CGameManialinkControl@ n, bool childFallback = true) from "UiNav";
+    import bool CanSetText(CGameManialinkControl@ n) from "UiNav";
     import string ReadText(CGameManialinkControl@ n) from "UiNav";
     import bool SetText(CGameManialinkControl@ n, const string &in text) from "UiNav";
 

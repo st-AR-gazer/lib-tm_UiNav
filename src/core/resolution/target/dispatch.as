@@ -171,7 +171,7 @@ namespace UiNav {
 
     void _SyncTargetInvalidation(Target@ t, _TargetState@ st) {
         if (t is null || st is null) return;
-        uint serial = t.cacheInvalidationSerial == 0 ? 1 : t.cacheInvalidationSerial;
+        uint serial = t.CacheInvalidationSerial();
         if (st.seenInvalidationSerial == serial) return;
         _ClearResolvedCache(st, "cache invalidated");
         st.seenInvalidationSerial = serial;
@@ -206,7 +206,7 @@ namespace UiNav {
 
         @st = _TargetState();
         st.scopeId = UiNav::Layers::_CurrentCallerScope();
-        st.seenInvalidationSerial = t.cacheInvalidationSerial == 0 ? 1 : t.cacheInvalidationSerial;
+        st.seenInvalidationSerial = t.CacheInvalidationSerial();
         st.lastTouchedMs = Time::Now;
         g_TargetStateHandles.InsertLast(t);
         g_TargetStateValues.InsertLast(st);
@@ -318,7 +318,7 @@ namespace UiNav {
         if (st is null) return;
         @st.plan = null;
         _ClearResolvedCache(st, "target plan invalidated");
-        st.seenInvalidationSerial = t.cacheInvalidationSerial == 0 ? 1 : t.cacheInvalidationSerial;
+        st.seenInvalidationSerial = t.CacheInvalidationSerial();
     }
 
     uint TargetPlanCacheHits() { return g_TargetPlanHits; }
@@ -383,15 +383,22 @@ namespace UiNav {
         return false;
     }
 
-    bool CheckRequirements(Target@ t, _TargetPlan@ plan = null) {
+    bool CheckRequirements(Target@ t, _TargetPlan@ plan = null, string &out failureReason = "") {
         uint startedAt = Time::Now;
         bool ok = true;
+        failureReason = "";
 
         if (t is null) {
             ok = false;
+            failureReason = "target is null";
         } else if (t.req !is null) {
-            if (!_CheckOverlaysAll(t.req.overlaysAll)) ok = false;
-            else if (!_CheckOverlaysAny(t.req.overlaysAny)) ok = false;
+            if (!_CheckOverlaysAll(t.req.overlaysAll)) {
+                ok = false;
+                failureReason = "missing required overlay from overlaysAll";
+            } else if (!_CheckOverlaysAny(t.req.overlaysAny)) {
+                ok = false;
+                failureReason = "none of the overlaysAny overlays are available";
+            }
             else {
                 array<string>@ allCache = null;
                 array<string>@ allFrame = null;
@@ -404,8 +411,13 @@ namespace UiNav {
                     @anyFrame = plan.reqAnyFrameKeys;
                 }
 
-                if (!_CheckLayersAll(t.req.layersAll, allCache, allFrame)) ok = false;
-                else if (!_CheckLayersAny(t.req.layersAny, anyCache, anyFrame)) ok = false;
+                if (!_CheckLayersAll(t.req.layersAll, allCache, allFrame)) {
+                    ok = false;
+                    failureReason = "missing required layer from layersAll";
+                } else if (!_CheckLayersAny(t.req.layersAny, anyCache, anyFrame)) {
+                    ok = false;
+                    failureReason = "none of the layersAny requests matched";
+                }
             }
         }
 
@@ -473,12 +485,23 @@ namespace UiNav {
         return _ControlTreeSpecSelector(s);
     }
 
-    CControlBase@ _ResolveControlTreeSpec(ControlTreeSpec@ s, ControlTreeReq@ fallback, uint &out matchedRootIx) {
+    CControlBase@ _ResolveControlTreeSpec(ControlTreeSpec@ s, ControlTreeReq@ fallback, uint &out matchedRootIx, string &out failDetail) {
         matchedRootIx = uint(-1);
-        if (s is null) return null;
+        failDetail = "";
+        if (s is null) {
+            failDetail = "control-tree spec is null";
+            return null;
+        }
 
         string selector = _ControlTreeSpecSelector(s);
-        if (selector.Length == 0) return null;
+        if (selector.Length == 0) {
+            failDetail = "control-tree selector is empty";
+            return null;
+        }
+        if (UiNav::CT::_ParseSelector(selector) is null) {
+            failDetail = "invalid control-tree selector syntax";
+            return null;
+        }
 
         uint overlay = _ControlTreeSpecOverlay(s, fallback);
         auto mode = _ControlTreeSpecSearchMode(s, fallback);
@@ -486,13 +509,22 @@ namespace UiNav {
 
         if (_ControlTreeSpecAnyRoot(s, fallback)) {
             CScene2d@ scene;
-            if (!_GetScene2d(overlay, scene) || scene is null) return null;
+            if (!_GetScene2d(overlay, scene) || scene is null) {
+                failDetail = "control-tree overlay is unavailable";
+                return null;
+            }
 
             uint rootsLen = scene.Mobils.Length;
-            if (rootsLen == 0) return null;
+            if (rootsLen == 0) {
+                failDetail = "control-tree overlay has no roots";
+                return null;
+            }
 
             uint maxRoots = Math::Min(_ControlTreeSpecMaxRoots(s, fallback), rootsLen);
-            if (maxRoots == 0) return null;
+            if (maxRoots == 0) {
+                failDetail = "control-tree anyRoot search has zero candidate roots";
+                return null;
+            }
 
             uint preferred = _ControlTreeSpecRootIx(s, fallback);
             if (preferred < maxRoots) {
@@ -514,6 +546,7 @@ namespace UiNav {
                 }
             }
 
+            failDetail = "control-tree selector did not match any node";
             return null;
         }
 
@@ -523,14 +556,26 @@ namespace UiNav {
             @root = RootAtOverlay(overlay);
         } else {
             CScene2d@ scene;
-            if (!_GetScene2d(overlay, scene) || scene is null) return null;
-            if (rootIx >= scene.Mobils.Length) return null;
+            if (!_GetScene2d(overlay, scene) || scene is null) {
+                failDetail = "control-tree overlay is unavailable";
+                return null;
+            }
+            if (rootIx >= scene.Mobils.Length) {
+                failDetail = "control-tree rootIx is out of range";
+                return null;
+            }
             @root = _RootFromMobil(scene, rootIx);
         }
-        if (root is null) return null;
+        if (root is null) {
+            failDetail = "control-tree root is unavailable";
+            return null;
+        }
 
         auto found = UiNav::CT::ResolveSelector(selector, root, mode, guard);
-        if (found is null) return null;
+        if (found is null) {
+            failDetail = "control-tree selector did not match any node";
+            return null;
+        }
         matchedRootIx = rootIx;
         return found;
     }
@@ -562,21 +607,29 @@ namespace UiNav {
         }
 
         if (st.cachedControlTree !is null && st.cacheEpoch == UiNav::Context::Epoch() && (Time::Now - st.lastResolveMs) <= kTargetPointerCacheTtlMs) {
-            if (t.controlTree.requireVisible && !IsEffectivelyVisible(st.cachedControlTree)) {
+            auto r = NodeRef();
+            r.kind = BackendKind::ControlTree;
+            r.selector = _ControlTreeSpecDebugSelector(t.controlTree);
+            r.overlay = _ControlTreeSpecOverlay(t.controlTree, null);
+            r.rootIx = st.cachedControlTreeRootIx;
+            @r.controlTree = st.cachedControlTree;
+            r.debug = "cached controlTree";
+            r.visibilityChecked = t.controlTree.requireVisible;
+            r.visibilityOk = t.controlTree.requireVisible;
+            r.resolvedAtMs = st.lastResolveMs;
+
+            if (!UiNav::CT::ValidateRef(r)) {
                 @st.cachedControlTree = null;
                 st.cachedControlTreeRootIx = uint(-1);
                 st.cacheEpoch = 0;
+                st.lastDebug = "cached control-tree ref became invalid";
+            } else if (t.controlTree.requireVisible && !IsEffectivelyVisible(st.cachedControlTree)) {
+                @st.cachedControlTree = null;
+                st.cachedControlTreeRootIx = uint(-1);
+                st.cacheEpoch = 0;
+                st.lastDebug = "cached control-tree node is not visible";
             } else {
-                auto r = NodeRef();
-                r.kind = BackendKind::ControlTree;
-                r.selector = _ControlTreeSpecDebugSelector(t.controlTree);
-                r.overlay = _ControlTreeSpecOverlay(t.controlTree, null);
-                r.rootIx = st.cachedControlTreeRootIx;
-                @r.controlTree = st.cachedControlTree;
-                r.debug = "cached controlTree";
-                r.visibilityChecked = t.controlTree.requireVisible;
-                r.visibilityOk = t.controlTree.requireVisible;
-                r.resolvedAtMs = st.lastResolveMs;
+                r.debug = "cached controlTree (validated)";
                 return r;
             }
         }
@@ -586,14 +639,22 @@ namespace UiNav {
         for (uint i = 0; i < t.controlTree.alts.Length; ++i) tries.InsertLast(t.controlTree.alts[i]);
 
         auto primaryReq = _ControlTreeSpecReq(t.controlTree, null);
+        string lastFailure = "";
         for (uint i = 0; i < tries.Length; ++i) {
             auto s = tries[i];
             if (s is null) continue;
             uint matchedRootIx = uint(-1);
-            auto n = _ResolveControlTreeSpec(s, primaryReq, matchedRootIx);
-            if (n is null) continue;
+            string failDetail = "";
+            auto n = _ResolveControlTreeSpec(s, primaryReq, matchedRootIx, failDetail);
+            if (n is null) {
+                if (failDetail.Length > 0) lastFailure = failDetail;
+                continue;
+            }
 
-            if (s.requireVisible && !IsEffectivelyVisible(n)) continue;
+            if (s.requireVisible && !IsEffectivelyVisible(n)) {
+                lastFailure = "resolved control-tree node is not visible";
+                continue;
+            }
 
             st.lastResolveMs = Time::Now;
             @st.cachedControlTree = n;
@@ -615,6 +676,7 @@ namespace UiNav {
             return r;
         }
 
+        if (lastFailure.Length > 0) st.lastDebug = lastFailure;
         return null;
     }
 
@@ -650,13 +712,6 @@ namespace UiNav {
             }
 
             if (ok) {
-                bool visReq = (t.ml !is null) ? t.ml.requireVisible : false;
-                if (visReq && !UiNav::ML::IsEffectivelyVisible(st.cachedMl)) {
-                    ok = false;
-                }
-            }
-
-            if (ok) {
                 auto r = NodeRef();
                 r.kind = BackendKind::ML;
                 r.source = resolvedSource;
@@ -670,7 +725,18 @@ namespace UiNav {
                 r.visibilityChecked = (t.ml !is null) ? t.ml.requireVisible : false;
                 r.visibilityOk = r.visibilityChecked;
                 r.resolvedAtMs = st.lastResolveMs;
-                return r;
+                ok = _ValidateMLRef(r);
+                if (!ok) {
+                    st.lastDebug = "cached ML ref became invalid";
+                } else {
+                    bool visReq = (t.ml !is null) ? t.ml.requireVisible : false;
+                    if (visReq && !UiNav::ML::IsEffectivelyVisible(st.cachedMl)) {
+                        ok = false;
+                        st.lastDebug = "cached ML node is not visible";
+                    }
+                }
+
+                if (ok) return r;
             }
 
             @st.cachedMl = null;
@@ -687,20 +753,34 @@ namespace UiNav {
         for (uint i = 0; i < t.ml.alts.Length; ++i) tries.InsertLast(t.ml.alts[i]);
 
         auto primaryReq = _ManiaLinkSpecReq(t.ml, null);
+        string lastFailure = "";
         for (uint i = 0; i < tries.Length; ++i) {
             auto s = tries[i];
             auto req = _ManiaLinkSpecReq(s, primaryReq);
-            if (s is null || req is null) continue;
+            if (s is null) continue;
+            if (req is null) {
+                lastFailure = "manialink req is null";
+                continue;
+            }
 
             int layerIx = -1;
             auto layer = UiNav::Layers::FindLayer(req, layerIx);
-            if (layer is null) continue;
+            if (layer is null) {
+                lastFailure = "manialink layer request did not match";
+                continue;
+            }
 
             auto page = layer.LocalPage;
-            if (page is null) continue;
+            if (page is null) {
+                lastFailure = "matched manialink layer has no local page";
+                continue;
+            }
 
             auto root = page.MainFrame;
-            if (root is null) continue;
+            if (root is null) {
+                lastFailure = "matched manialink layer has no root frame";
+                continue;
+            }
 
             CGameManialinkControl@ node = null;
             string resolvedSelector = _ManiaLinkSpecSelector(s);
@@ -709,17 +789,38 @@ namespace UiNav {
                 @node = UiNav::ML::ResolveSelectorPrepared(plan.mlToks, root);
                 if (plan.mlSelectorTrim.Length > 0) resolvedSelector = plan.mlSelectorTrim;
             } else {
-                @node = UiNav::ML::ResolveSelector(resolvedSelector, root);
+                if (resolvedSelector.Length == 0) {
+                    @node = root;
+                } else {
+                    auto toks = UiNav::ML::_GetTokChainCached(resolvedSelector);
+                    if (toks is null) {
+                        lastFailure = "invalid ML selector syntax";
+                        continue;
+                    }
+                    @node = UiNav::ML::ResolveSelectorPrepared(toks, root);
+                }
             }
-            if (node is null) continue;
+            if (node is null) {
+                lastFailure = "ML selector did not match any node";
+                continue;
+            }
 
-            if (layer.LocalPage !is page) continue;
+            if (layer.LocalPage !is page) {
+                lastFailure = "matched manialink layer changed during resolution";
+                continue;
+            }
 
-            if (s.requireVisible && !UiNav::ML::IsEffectivelyVisible(node)) continue;
+            if (s.requireVisible && !UiNav::ML::IsEffectivelyVisible(node)) {
+                lastFailure = "resolved ML node is not visible";
+                continue;
+            }
 
             ManiaLinkSource resolvedSource = ManiaLinkSource::CurrentApp;
             CGameManiaApp@ appNow = null;
-            if (!_ResolveMlSource(req, resolvedSource, appNow)) continue;
+            if (!_ResolveMlSource(req, resolvedSource, appNow)) {
+                lastFailure = "manialink source is unavailable";
+                continue;
+            }
 
             st.lastResolveMs = Time::Now;
             @st.cachedLayer = layer;
@@ -748,6 +849,7 @@ namespace UiNav {
             return r;
         }
 
+        if (lastFailure.Length > 0) st.lastDebug = lastFailure;
         return null;
     }
 
@@ -770,9 +872,10 @@ namespace UiNav {
         UiNav::Trace::Ev("Resolve.begin", t);
 
         if (checkRequirements && t.req !is null) {
-            bool reqOk = CheckRequirements(t, plan);
+            string reqFailure = "";
+            bool reqOk = CheckRequirements(t, plan, reqFailure);
             if (!reqOk) {
-                _ClearResolvedCache(st, "requirements failed");
+                _ClearResolvedCache(st, reqFailure.Length > 0 ? reqFailure : "requirements failed");
                 if (t.req.strict) {
                     UiNav::Metrics::Record("resolve", Time::Now - startedAt);
                     return null;
@@ -810,8 +913,11 @@ namespace UiNav {
             if (r is null) @r = ResolveControlTree(t, st);
         }
 
-        if (r is null) st.lastDebug = "resolve failed";
-        else st.lastDebug = r.debug;
+        if (r is null) {
+            if (st.lastDebug.Length == 0) st.lastDebug = "resolve failed";
+        } else {
+            st.lastDebug = r.debug;
+        }
 
         if (r is null) UiNav::Trace::Ev("Resolve.fail", t, null, st.lastDebug);
         else UiNav::Trace::Ev("Resolve.ok", t, r);
@@ -834,14 +940,48 @@ namespace UiNav {
         if (s == OpStatus::NotVisible) return "NotVisible";
         if (s == OpStatus::ActionFailed) return "ActionFailed";
         if (s == OpStatus::TimedOut) return "TimedOut";
+        if (s == OpStatus::UnsupportedOperation) return "UnsupportedOperation";
         return "Unknown";
     }
 
-    OpResult@ _MakeOpResult(OpStatus status, NodeRef@ r = null, const string &in reason = "", const string &in text = "") {
+    string _OpStatusCode(OpStatus s) {
+        if (s == OpStatus::Ok) return "ok";
+        if (s == OpStatus::InvalidTarget) return "invalid_target";
+        if (s == OpStatus::RequirementsFailed) return "requirements_failed";
+        if (s == OpStatus::ResolveFailed) return "resolve_failed";
+        if (s == OpStatus::InvalidBackendRef) return "invalid_backend_ref";
+        if (s == OpStatus::NotVisible) return "not_visible";
+        if (s == OpStatus::ActionFailed) return "action_failed";
+        if (s == OpStatus::TimedOut) return "timed_out";
+        if (s == OpStatus::UnsupportedOperation) return "unsupported_operation";
+        return "unknown";
+    }
+
+    string _TraceOpResult(OpResult@ res) {
+        if (res is null) return "status=Unknown";
+
+        string summary = "status=" + _OpStatusName(res.status);
+        if (res.code.Length > 0) summary += " code=" + res.code;
+        if (res.reason.Length > 0) summary += " reason=" + res.reason;
+        if (res.detail.Length > 0 && res.detail != res.reason) summary += " detail=" + res.detail;
+        if (res.status == OpStatus::TimedOut) {
+            summary += " lastStatus=" + _OpStatusName(res.lastStatus);
+            summary += " waitedMs=" + res.waitedMs;
+            summary += " attempts=" + res.attempts;
+        }
+        return summary;
+    }
+
+    OpResult@ _MakeOpResult(OpStatus status, NodeRef@ r = null, const string &in reason = "", const string &in text = "",
+        const string &in code = "", const string &in detail = "")
+    {
         OpResult@ res = OpResult();
         res.status = status;
+        res.lastStatus = status;
         res.kind = (r is null) ? BackendKind::None : r.kind;
+        res.code = code.Length > 0 ? code : _OpStatusCode(status);
         res.reason = reason;
+        res.detail = detail.Length > 0 ? detail : reason;
         res.text = text;
         @res.ref = r;
         return res;
@@ -855,7 +995,7 @@ namespace UiNav {
     OpResult@ _ResolveForOp(Target@ t, const string &in opName) {
         if (t is null) {
             auto res = _MakeOpResult(OpStatus::InvalidTarget, null, "target is null");
-            UiNav::Trace::Ev(opName + ".fail", null, null, "status=" + _OpStatusName(res.status) + " reason=" + res.reason);
+            UiNav::Trace::Ev(opName + ".fail", null, null, _TraceOpResult(res));
             return res;
         }
 
@@ -863,31 +1003,32 @@ namespace UiNav {
         auto plan = _EnsureTargetPlan(t, st);
 
         if (t.req !is null) {
-            if (!CheckRequirements(t, plan)) {
-                auto res = _MakeOpResult(OpStatus::RequirementsFailed, null, "requirements failed");
-                UiNav::Trace::Ev(opName + ".fail", t, null, "status=" + _OpStatusName(res.status) + " reason=" + res.reason);
+            string reqFailure = "";
+            if (!CheckRequirements(t, plan, reqFailure)) {
+                if (reqFailure.Length == 0) reqFailure = "requirements failed";
+                auto res = _MakeOpResult(OpStatus::RequirementsFailed, null, reqFailure);
+                UiNav::Trace::Ev(opName + ".fail", t, null, _TraceOpResult(res));
                 return res;
             }
         }
 
         NodeRef@ r = _ResolveInternal(t, false, plan);
         if (r is null || r.IsNull()) {
-            auto res = _MakeOpResult(OpStatus::ResolveFailed, r, "resolve failed");
-            UiNav::Trace::Ev(opName + ".fail", t, r, "status=" + _OpStatusName(res.status) + " reason=" + res.reason);
+            string reason = (st !is null && st.lastDebug.Length > 0) ? st.lastDebug : "resolve failed";
+            auto res = _MakeOpResult(OpStatus::ResolveFailed, r, reason);
+            UiNav::Trace::Ev(opName + ".fail", t, r, _TraceOpResult(res));
             return res;
         }
 
-        if (r.kind == BackendKind::ML) {
-            if (!UiNav::ML::ValidateRef(r)) {
-                auto res = _MakeOpResult(OpStatus::InvalidBackendRef, r, "ValidateRef failed");
-                UiNav::Trace::Ev(opName + ".fail", t, r, "status=" + _OpStatusName(res.status) + " reason=" + res.reason);
-                return res;
-            }
+        if (!UiNav::ValidateRef(r)) {
+            auto res = _MakeOpResult(OpStatus::InvalidBackendRef, r, "resolved handle is no longer valid", "", "invalid_backend_ref", "ValidateRef failed");
+            UiNav::Trace::Ev(opName + ".fail", t, r, _TraceOpResult(res));
+            return res;
         }
 
         if (!_CheckReqVisible(t, r)) {
             auto res = _MakeOpResult(OpStatus::NotVisible, r, "target not visible");
-            UiNav::Trace::Ev(opName + ".fail", t, r, "status=" + _OpStatusName(res.status) + " reason=" + res.reason);
+            UiNav::Trace::Ev(opName + ".fail", t, r, _TraceOpResult(res));
             return res;
         }
 
@@ -919,19 +1060,29 @@ namespace UiNav {
 
         if (r.kind == BackendKind::ControlTree) {
             bool childFallback = (t.controlTree !is null) ? t.controlTree.clickChildFallback : true;
+            if (!UiNav::CanClick(r.controlTree, childFallback)) {
+                auto res = _MakeOpResult(OpStatus::UnsupportedOperation, r, "target is not clickable", "", "unsupported_click");
+                UiNav::Trace::Ev("Click.fail", t, r, _TraceOpResult(res));
+                return _DoneOp("click", startedAt, res);
+            }
             ok = ClickControlNode(r.controlTree, childFallback);
         } else if (r.kind == BackendKind::ML) {
             bool childFallback = (t.ml !is null) ? t.ml.clickChildFallback : true;
+            if (!UiNav::ML::CanClick(r.ml, childFallback)) {
+                auto res = _MakeOpResult(OpStatus::UnsupportedOperation, r, "target is not clickable", "", "unsupported_click");
+                UiNav::Trace::Ev("Click.fail", t, r, _TraceOpResult(res));
+                return _DoneOp("click", startedAt, res);
+            }
             ok = UiNav::ML::Click(r.ml, childFallback);
         } else {
             auto res = _MakeOpResult(OpStatus::InvalidBackendRef, r, "unsupported backend");
-            UiNav::Trace::Ev("Click.fail", t, r, "status=" + _OpStatusName(res.status) + " reason=" + res.reason);
+            UiNav::Trace::Ev("Click.fail", t, r, _TraceOpResult(res));
             return _DoneOp("click", startedAt, res);
         }
 
         if (!ok) {
-            auto res = _MakeOpResult(OpStatus::ActionFailed, r, "action failed");
-            UiNav::Trace::Ev("Click.fail", t, r, "status=" + _OpStatusName(res.status) + " reason=" + res.reason);
+            auto res = _MakeOpResult(OpStatus::ActionFailed, r, "click action failed", "", "click_failed");
+            UiNav::Trace::Ev("Click.fail", t, r, _TraceOpResult(res));
             return _DoneOp("click", startedAt, res);
         }
 
@@ -954,18 +1105,28 @@ namespace UiNav {
         bool ok = false;
 
         if (r.kind == BackendKind::ControlTree) {
+            if (!UiNav::CanSetText(r.controlTree)) {
+                auto res = _MakeOpResult(OpStatus::UnsupportedOperation, r, "target does not support text editing", "", "unsupported_set_text");
+                UiNav::Trace::Ev("SetText.fail", t, r, _TraceOpResult(res));
+                return _DoneOp("set_text", startedAt, res);
+            }
             ok = SetTextControlNode(r.controlTree, text);
         } else if (r.kind == BackendKind::ML) {
+            if (!UiNav::ML::CanSetText(r.ml)) {
+                auto res = _MakeOpResult(OpStatus::UnsupportedOperation, r, "target does not support text editing", "", "unsupported_set_text");
+                UiNav::Trace::Ev("SetText.fail", t, r, _TraceOpResult(res));
+                return _DoneOp("set_text", startedAt, res);
+            }
             ok = UiNav::ML::SetText(r.ml, text);
         } else {
             auto res = _MakeOpResult(OpStatus::InvalidBackendRef, r, "unsupported backend");
-            UiNav::Trace::Ev("SetText.fail", t, r, "status=" + _OpStatusName(res.status) + " reason=" + res.reason);
+            UiNav::Trace::Ev("SetText.fail", t, r, _TraceOpResult(res));
             return _DoneOp("set_text", startedAt, res);
         }
 
         if (!ok) {
-            auto res = _MakeOpResult(OpStatus::ActionFailed, r, "action failed");
-            UiNav::Trace::Ev("SetText.fail", t, r, "status=" + _OpStatusName(res.status) + " reason=" + res.reason);
+            auto res = _MakeOpResult(OpStatus::ActionFailed, r, "text update failed", "", "set_text_failed");
+            UiNav::Trace::Ev("SetText.fail", t, r, _TraceOpResult(res));
             return _DoneOp("set_text", startedAt, res);
         }
 
@@ -986,18 +1147,28 @@ namespace UiNav {
 
         auto r = base.ref;
         if (r.kind == BackendKind::ControlTree) {
-            string v = UiNav::ReadText(r.controlTree);
+            string v = "";
+            if (!UiNav::TryReadText(r.controlTree, v)) {
+                auto res = _MakeOpResult(OpStatus::UnsupportedOperation, r, "target does not expose readable text", "", "unsupported_read_text");
+                UiNav::Trace::Ev("ReadText.fail", t, r, _TraceOpResult(res));
+                return _DoneOp("read_text", startedAt, res);
+            }
             UiNav::Trace::Ev("ReadText.ok", t, r, "len=" + v.Length);
             return _DoneOp("read_text", startedAt, _MakeOpResult(OpStatus::Ok, r, "", v));
         }
         if (r.kind == BackendKind::ML) {
-            string v = UiNav::ML::ReadText(r.ml);
+            string v = "";
+            if (!UiNav::ML::TryReadText(r.ml, v)) {
+                auto res = _MakeOpResult(OpStatus::UnsupportedOperation, r, "target does not expose readable text", "", "unsupported_read_text");
+                UiNav::Trace::Ev("ReadText.fail", t, r, _TraceOpResult(res));
+                return _DoneOp("read_text", startedAt, res);
+            }
             UiNav::Trace::Ev("ReadText.ok", t, r, "len=" + v.Length);
             return _DoneOp("read_text", startedAt, _MakeOpResult(OpStatus::Ok, r, "", v));
         }
 
         auto res = _MakeOpResult(OpStatus::InvalidBackendRef, r, "unsupported backend");
-        UiNav::Trace::Ev("ReadText.fail", t, r, "status=" + _OpStatusName(res.status) + " reason=" + res.reason);
+        UiNav::Trace::Ev("ReadText.fail", t, r, _TraceOpResult(res));
         return _DoneOp("read_text", startedAt, res);
     }
 

@@ -215,6 +215,8 @@ namespace Builder {
         obj["clip_pos_y"] = typed.clipPos.y;
         obj["clip_size_x"] = typed.clipSize.x;
         obj["clip_size_y"] = typed.clipSize.y;
+        obj["clip_pos_explicit"] = typed.clipPosExplicit;
+        obj["clip_size_explicit"] = typed.clipSizeExplicit;
 
         obj["image"] = typed.image;
         obj["image_focus"] = typed.imageFocus;
@@ -262,6 +264,8 @@ namespace Builder {
         typed.clipActive = _BuilderJsonBool(obj, "clip_active", typed.clipActive);
         typed.clipPos = vec2(_BuilderJsonFloat(obj, "clip_pos_x", typed.clipPos.x), _BuilderJsonFloat(obj, "clip_pos_y", typed.clipPos.y));
         typed.clipSize = vec2(_BuilderJsonFloat(obj, "clip_size_x", typed.clipSize.x), _BuilderJsonFloat(obj, "clip_size_y", typed.clipSize.y));
+        typed.clipPosExplicit = _BuilderJsonBool(obj, "clip_pos_explicit", typed.clipPosExplicit);
+        typed.clipSizeExplicit = _BuilderJsonBool(obj, "clip_size_explicit", typed.clipSizeExplicit);
 
         typed.image = _BuilderJsonStr(obj, "image", typed.image);
         typed.imageFocus = _BuilderJsonStr(obj, "image_focus", typed.imageFocus);

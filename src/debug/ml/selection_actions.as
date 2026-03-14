@@ -1,6 +1,39 @@
 namespace UiNav {
 namespace Debug {
 
+    void _RenderMlLiveOverlayToggles(const string &in idPrefix, const string &in primaryLabel = "Live layer box", bool showHeader = true) {
+        if (showHeader) UI::Text("Live overlay");
+
+        bool liveLayerBox = UiNav::Builder::S_LiveLayerBoundsOverlayEnabled;
+        liveLayerBox = UI::Checkbox(primaryLabel + "##" + idPrefix + "-live-layer-box", liveLayerBox);
+        if (liveLayerBox != UiNav::Builder::S_LiveLayerBoundsOverlayEnabled) {
+            UiNav::Builder::S_LiveLayerBoundsOverlayEnabled = liveLayerBox;
+            if (liveLayerBox) UiNav::Builder::RefreshLiveLayerBoundsOverlay(true);
+            else UiNav::Builder::DestroyLiveLayerBoundsOverlay();
+        }
+        if (UI::IsItemHovered()) {
+            UI::SetTooltip("Draw bounds for the selected ML layer or subtree in the live UI.");
+        }
+
+        UI::SameLine();
+        bool liveParentBox = UiNav::Builder::S_LiveLayerBoundsOverlayParentChainEnabled;
+        liveParentBox = UI::Checkbox("Parent chain##" + idPrefix + "-live-layer-parent", liveParentBox);
+        if (liveParentBox != UiNav::Builder::S_LiveLayerBoundsOverlayParentChainEnabled) {
+            UiNav::Builder::S_LiveLayerBoundsOverlayParentChainEnabled = liveParentBox;
+            if (UiNav::Builder::S_LiveLayerBoundsOverlayEnabled) UiNav::Builder::RefreshLiveLayerBoundsOverlay(true);
+        }
+        if (UI::IsItemHovered()) {
+            UI::SetTooltip("Also draw bounds for each direct parent path of the selected ML node in the live UI.");
+        }
+
+        if (UiNav::Builder::S_LiveLayerBoundsOverlayEnabled) {
+            UI::SameLine();
+            if (UI::Button("Refresh##" + idPrefix + "-live-layer-box")) {
+                UiNav::Builder::RefreshLiveLayerBoundsOverlay(true);
+            }
+        }
+    }
+
     bool _MlImportLayerToBuilder(int appKind, int layerIx, string &out status) {
         status = "";
         if (layerIx < 0) {
@@ -14,9 +47,11 @@ namespace Debug {
             return false;
         }
 
+        bool usedXmlFallback = false;
         bool ok = UiNav::Builder::ImportFromLiveLayerTree(appKind, layerIx);
         if (!ok) {
             ok = UiNav::Builder::ImportFromLiveLayer(appKind, layerIx);
+            usedXmlFallback = ok;
         }
         if (!ok) {
             status = "Copy to Builder failed: " + UiNav::Builder::g_Status;
@@ -25,7 +60,9 @@ namespace Debug {
 
         UiNav::Builder::g_ImportAppKind = appKind;
         UiNav::Builder::g_ImportLayerIx = layerIx;
-        status = "Copied layer L[" + layerIx + "] to Builder.";
+        status = usedXmlFallback
+            ? ("Copied layer L[" + layerIx + "] to Builder (XML fallback).")
+            : ("Copied layer L[" + layerIx + "] to Builder.");
         return true;
     }
 
@@ -147,7 +184,7 @@ namespace Debug {
                 g_MlValueLocksStatus = builderStatus;
             }
             if (UI::IsItemHovered()) {
-                UI::SetTooltip("Imports the selected live layer into the ManiaLink Builder tab.");
+                UI::SetTooltip("Imports the selected live layer into the ManiaLink Builder tab.\nPrefers live-tree hierarchy cloning, then falls back to raw layer XML if needed.");
             }
 
             if (UI::Button("Copy layer to Builder + ORIGIN marker##ml-actions-copy-layer-builder-origin")) {
@@ -180,33 +217,7 @@ namespace Debug {
         if (g_MlNodeFocusStatus.Length > 0) UI::Text(g_MlNodeFocusStatus);
 
         UI::Separator();
-        UI::Text("Live overlay");
-        bool liveLayerBox = UiNav::Builder::S_LiveLayerBoundsOverlayEnabled;
-        liveLayerBox = UI::Checkbox("Live layer box##ml-actions-live-layer-box", liveLayerBox);
-        if (liveLayerBox != UiNav::Builder::S_LiveLayerBoundsOverlayEnabled) {
-            UiNav::Builder::S_LiveLayerBoundsOverlayEnabled = liveLayerBox;
-            if (liveLayerBox) UiNav::Builder::RefreshLiveLayerBoundsOverlay(true);
-            else UiNav::Builder::DestroyLiveLayerBoundsOverlay();
-        }
-        if (UI::IsItemHovered()) {
-            UI::SetTooltip("Draw bounds for the selected ML layer or subtree in the live UI.");
-        }
-        UI::SameLine();
-        bool liveParentBox = UiNav::Builder::S_LiveLayerBoundsOverlayParentChainEnabled;
-        liveParentBox = UI::Checkbox("Parent chain##ml-actions-live-layer-parent", liveParentBox);
-        if (liveParentBox != UiNav::Builder::S_LiveLayerBoundsOverlayParentChainEnabled) {
-            UiNav::Builder::S_LiveLayerBoundsOverlayParentChainEnabled = liveParentBox;
-            if (UiNav::Builder::S_LiveLayerBoundsOverlayEnabled) UiNav::Builder::RefreshLiveLayerBoundsOverlay(true);
-        }
-        if (UI::IsItemHovered()) {
-            UI::SetTooltip("Also draw bounds for each direct parent path of the selected ML node in the live UI.");
-        }
-        if (UiNav::Builder::S_LiveLayerBoundsOverlayEnabled) {
-            UI::SameLine();
-            if (UI::Button("Refresh##ml-actions-live-layer-box")) {
-                UiNav::Builder::RefreshLiveLayerBoundsOverlay(true);
-            }
-        }
+        _RenderMlLiveOverlayToggles("ml-actions", "Live layer box", /*showHeader=*/true);
 
         UI::Separator();
         UI::Text("Lock selected value");

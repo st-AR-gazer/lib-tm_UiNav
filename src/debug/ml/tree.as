@@ -135,6 +135,24 @@ namespace Debug {
         UI::SameLine();
         UI::Text("\\$888Search: words (AND), \"quoted text\", -exclude, id:, text:, class:, type:, path:, vis:true/false\\$z");
         UI::Text("\\$888Scope: " + (S_MlSearchGlobal ? "global (full tree)" : "visible only (open rows)") + "\\$z");
+        _RenderMlLiveOverlayToggles("ml-pane", "Selection box", /*showHeader=*/false);
+        UI::SameLine();
+        bool hasSelection = g_SelectedMlUiPath.Length > 0;
+        if (!hasSelection) UI::BeginDisabled();
+        if (UI::Button(Icons::Clipboard + " Copy Bounds Data##ml-pane-copy-bounds")) {
+            MlSelectionContext@ copyCtx = null;
+            string copyErr;
+            if (_BuildMlSelectionContext(copyCtx, copyErr) && copyCtx !is null) {
+                string payload = _BuildMlSelectionBoundsDataText(copyCtx);
+                if (payload.Length > 0) IO::SetClipboard(payload);
+            }
+        }
+        if (!hasSelection) UI::EndDisabled();
+        if (UI::IsItemHovered()) {
+            UI::SetTooltip(hasSelection
+                ? "Copy the live geometry/bounds data for the current ManiaLink selection."
+                : "Select a ManiaLink node first.");
+        }
         if (g_MlViewLayerIndex < -1) g_MlViewLayerIndex = -1;
 
         if (!_MlSourceAvailable(appKind)) {

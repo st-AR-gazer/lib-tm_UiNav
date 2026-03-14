@@ -156,6 +156,18 @@ namespace Builder {
         return w;
     }
 
+    vec2 _BuilderScreenHalfExtents() {
+        float w = float(Display::GetWidth());
+        float h = float(Display::GetHeight());
+        if (w < 1.0f) w = 1600.0f;
+        if (h < 1.0f) h = 900.0f;
+
+        float aspect = w / h;
+        if (aspect < 0.5f) aspect = 0.5f;
+        if (aspect > 4.0f) aspect = 4.0f;
+        return vec2(90.0f * aspect, 90.0f);
+    }
+
     float _EditFloatSlider(const string &in label, float target, float minV, float maxV, const string &in status, const string &in fmt = "%.3f") {
         float next = UI::SliderFloat(label, target, minV, maxV, fmt);
         if (next == target) return target;
@@ -167,6 +179,61 @@ namespace Builder {
     vec2 _EditVec2Slider(const string &in label, const vec2 &in target, float minV, float maxV, const string &in status, const string &in fmt = "%.3f") {
         vec2 next = UI::SliderFloat2(label, target, minV, maxV, fmt);
         if (next.x == target.x && next.y == target.y) return target;
+        _PushUndoSnapshot();
+        _Mutated(status);
+        return next;
+    }
+
+    void _RefreshBuilderStickyGuidesPreview() {
+        if (S_AutoLivePreview) _QueueAutoPreview();
+        else _ApplyPreviewLayerInternal(false);
+    }
+
+    vec2 _EditNodePosSlider(const string &in label, int nodeIx, const vec2 &in target, const string &in status, const string &in fmt = "%.3f") {
+        vec2 screenHalf = _BuilderScreenHalfExtents();
+        vec2 minPos = vec2(-_ScreenWidthSliderMax(), -_ScreenWidthSliderMax());
+        vec2 maxPos = vec2(_ScreenWidthSliderMax(), _ScreenWidthSliderMax());
+        bool hasClamp = _ComputeBuilderNodeLocalPosClamp(g_Doc, nodeIx, screenHalf, minPos, maxPos, S_BuilderStickySnapOffscreenMargin);
+
+        float sliderMin = Math::Min(Math::Min(minPos.x, minPos.y), Math::Min(target.x, target.y));
+        float sliderMax = Math::Max(Math::Max(maxPos.x, maxPos.y), Math::Max(target.x, target.y));
+        vec2 next = UI::SliderFloat2(label, target, sliderMin, sliderMax, fmt);
+        bool itemActive = UI::IsItemActive();
+        if (next.x == target.x && next.y == target.y) {
+            if (!itemActive && g_BuilderStickyGuides.active) {
+                _ClearBuilderStickyGuides();
+                _RefreshBuilderStickyGuidesPreview();
+            }
+            if (UI::IsItemHovered() && hasClamp) {
+                UI::SetTooltip("Slider keeps bounds near-screen with sticky guides.\nX: " + minPos.x + " .. " + maxPos.x
+                    + "\nY: " + minPos.y + " .. " + maxPos.y);
+            }
+            return target;
+        }
+
+        array<float> verticalGuides;
+        array<float> horizontalGuides;
+        if (hasClamp) {
+            next = ResolveBuilderNodeSliderPos(
+                g_Doc,
+                nodeIx,
+                next,
+                screenHalf,
+                S_BuilderStickySnapOffscreenMargin,
+                S_BuilderStickySnapEnabled,
+                S_BuilderStickySnapToScreen,
+                S_BuilderStickySnapToNodes,
+                S_BuilderStickySnapThreshold,
+                verticalGuides,
+                horizontalGuides
+            );
+        }
+
+        if (S_BuilderStickySnapGuidesEnabled && (verticalGuides.Length > 0 || horizontalGuides.Length > 0)) {
+            _SetBuilderStickyGuides(screenHalf, S_BuilderStickySnapOffscreenMargin, verticalGuides, horizontalGuides);
+        } else {
+            _ClearBuilderStickyGuides();
+        }
         _PushUndoSnapshot();
         _Mutated(status);
         return next;
@@ -291,6 +358,97 @@ namespace Builder {
         }
         if (boundsTarget) {
             dl.AddRect(box, vec4(1.0f, 0.85f, 0.2f, 0.70f));
+        }
+    }
+
+    bool _ActionButton(const string &in label, bool enabled, const string &in tooltip = "") {
+        if (!enabled) UI::BeginDisabled();
+        bool pressed = UI::Button(label);
+        if (!enabled) UI::EndDisabled();
+        if (tooltip.Length > 0 && UI::IsItemHovered()) UI::SetTooltip(tooltip);
+        return enabled && pressed;
+    }
+
+    bool _ActionMenuItem(const string &in label, bool enabled) {
+        if (!enabled) UI::BeginDisabled();
+        bool pressed = UI::MenuItem(label);
+        if (!enabled) UI::EndDisabled();
+        return enabled && pressed;
+    }
+
+    void _RenderNodeStructureActionsMenu(const BuilderNode@ n, int nodeIx) {
+        if (n is null) return;
+
+        bool canMoveToRoot = n.parentIx >= 0;
+        bool canMoveOut = n.parentIx >= 0;
+        bool canMoveUp = _CanMoveNodeSiblingOrderDelta(nodeIx, -1);
+        bool canMoveDown = _CanMoveNodeSiblingOrderDelta(nodeIx, 1);
+
+        UI::TextDisabled("Actions");
+        if (_ActionMenuItem(Icons::LevelUp + " Move to root", canMoveToRoot)) {
+            MoveNodeToRootAction(nodeIx);
+        }
+        if (_ActionMenuItem("Move to parent level", canMoveOut)) {
+            MoveNodeOutOneLevel(nodeIx);
+        }
+        if (_ActionMenuItem("Move up in siblings", canMoveUp)) {
+            MoveNodeSiblingOrder(nodeIx, -1);
+        }
+        if (_ActionMenuItem("Move down in siblings", canMoveDown)) {
+            MoveNodeSiblingOrder(nodeIx, 1);
+        }
+    }
+
+    void _RenderInspectorActionsTab(BuilderNode@ n, int nodeIx) {
+        if (n is null) return;
+
+        int parentIx = -1;
+        int siblingPos = -1;
+        int siblingCount = 0;
+        bool hasSiblingContext = _GetNodeSiblingContext(nodeIx, parentIx, siblingPos, siblingCount);
+
+        bool canMoveToRoot = n.parentIx >= 0;
+        bool canMoveOut = n.parentIx >= 0;
+        bool canMoveUp = _CanMoveNodeSiblingOrderDelta(nodeIx, -1);
+        bool canMoveDown = _CanMoveNodeSiblingOrderDelta(nodeIx, 1);
+
+        UI::TextDisabled("Explicit structure actions for the selected node.");
+        UI::Separator();
+
+        if (hasSiblingContext) {
+            UI::TextDisabled("Parent: " + (parentIx >= 0 ? ("[" + parentIx + "]") : "root"));
+            UI::TextDisabled("Sibling position: " + (siblingPos + 1) + " / " + siblingCount);
+            if (parentIx >= 0) {
+                auto parent = g_Doc.nodes[uint(parentIx)];
+                int grandParentIx = parent is null ? -1 : parent.parentIx;
+                UI::TextDisabled("Parent level target: " + (grandParentIx >= 0 ? ("[" + grandParentIx + "]") : "root"));
+            }
+        } else {
+            UI::TextDisabled("Sibling context unavailable.");
+        }
+
+        UI::Separator();
+        if (_ActionButton(Icons::LevelUp + " Move to root##builder-actions-root", canMoveToRoot,
+                "Reparent this node to the document root.")) {
+            MoveNodeToRootAction(nodeIx);
+        }
+        if (_ActionButton("Move to parent level##builder-actions-parent", canMoveOut,
+                "Reparent this node to its parent's parent.")) {
+            MoveNodeOutOneLevel(nodeIx);
+        }
+        if (_ActionButton("Move up in siblings##builder-actions-up", canMoveUp,
+                "Move this node one slot earlier in its current sibling order.")) {
+            MoveNodeSiblingOrder(nodeIx, -1);
+        }
+        if (_ActionButton("Move down in siblings##builder-actions-down", canMoveDown,
+                "Move this node one slot later in its current sibling order.")) {
+            MoveNodeSiblingOrder(nodeIx, 1);
+        }
+
+        UI::Separator();
+        if (_ActionButton(Icons::TrashO + " Delete node##builder-actions-delete", true,
+                "Delete this node and its subtree.")) {
+            DeleteNode(nodeIx);
         }
     }
 
@@ -456,6 +614,10 @@ namespace Builder {
             if (UI::IsMouseClicked(UI::MouseButton::Right)) {
                 g_SelectedNodeIx = nodeIx;
                 _RefreshPreviewForBoundsTargetChange();
+                if (g_BuilderStickyGuides.active) {
+                    _ClearBuilderStickyGuides();
+                    _RefreshBuilderStickyGuidesPreview();
+                }
             }
             if (UI::IsMouseClicked(UI::MouseButton::Middle)) {
                 UI::OpenPopup("##builder-node-popup-" + uiPath);
@@ -495,12 +657,10 @@ namespace Builder {
             if (UI::MenuItem("\\$ddd" + Icons::PlusSquareO + " Generic\\$z")) AddNode("generic", nodeIx);
             UI::Separator();
 
+            _RenderNodeStructureActionsMenu(n, nodeIx);
+            UI::Separator();
+
             if (UI::MenuItem(Icons::TrashO + " Delete node")) DeleteNode(nodeIx);
-            if (n.parentIx >= 0) {
-                if (UI::MenuItem(Icons::LevelUp + " Move to root")) {
-                    if (!MoveNode(nodeIx, -1)) g_Status = "Move failed.";
-                }
-            }
 
             UI::EndPopup();
         }
@@ -625,7 +785,7 @@ namespace Builder {
         UI::SetNextItemOpen(true, UI::Cond::Appearing);
         if (UI::CollapsingHeader("Transform##builder-insp")) {
             float sw = _ScreenWidthSliderMax();
-            n.typed.pos = _EditVec2Slider("pos##builder-insp", n.typed.pos, -sw, sw, "Updated pos.");
+            n.typed.pos = _EditNodePosSlider("pos##builder-insp", nodeIx, n.typed.pos, "Updated pos.");
             n.typed.size = _EditVec2Slider("size##builder-insp", n.typed.size, 0.0f, sw, "Updated size.");
             n.typed.z = _EditFloatAsText("z##builder-insp", n.typed.z, "Updated z.");
             n.typed.scale = _EditFloatAsText("scale##builder-insp", n.typed.scale, "Updated scale.");
@@ -653,8 +813,16 @@ namespace Builder {
                     n.typed.clipActive = clip;
                     _Mutated("Updated clip active.");
                 }
+                vec2 prevClipPos = n.typed.clipPos;
                 n.typed.clipPos = _EditVec2AsText("clip pos##builder-insp-frame", n.typed.clipPos, "Updated clip pos.");
+                if (n.typed.clipPos.x != prevClipPos.x || n.typed.clipPos.y != prevClipPos.y) {
+                    n.typed.clipPosExplicit = true;
+                }
+                vec2 prevClipSize = n.typed.clipSize;
                 n.typed.clipSize = _EditVec2AsText("clip size##builder-insp-frame", n.typed.clipSize, "Updated clip size.");
+                if (n.typed.clipSize.x != prevClipSize.x || n.typed.clipSize.y != prevClipSize.y) {
+                    n.typed.clipSizeExplicit = true;
+                }
             }
         } else if (n.kind == "quad") {
             UI::SetNextItemOpen(true, UI::Cond::Appearing);
@@ -780,6 +948,15 @@ namespace Builder {
     }
 
     void _RenderInspectorComputedTab(BuilderNode@ n, int nodeIx) {
+        if (UI::Button(Icons::Clipboard + " Copy Bounds Data##builder-insp-computed-copy")) {
+            string payload = _BuildBuilderComputedMetricsText(n, nodeIx);
+            if (payload.Length > 0) {
+                IO::SetClipboard(payload);
+                g_Status = "Copied computed bounds data.";
+            }
+        }
+        if (UI::IsItemHovered()) UI::SetTooltip("Copy the computed geometry/bounds data for this builder node.");
+
         UI::TextDisabled("Computed absolute metrics (read-only).");
         UI::Separator();
 
@@ -809,30 +986,85 @@ namespace Builder {
         }
     }
 
+    string _BuildBuilderComputedMetricsText(const BuilderNode@ n, int nodeIx) {
+        if (n is null) return "";
+
+        array<string> lines;
+        string kind = n.kind.Length > 0 ? n.kind : n.tagName;
+        string title = kind;
+        if (n.controlId.Length > 0) title += " #" + n.controlId;
+        lines.InsertLast(title);
+
+        auto abs = ComputeAbsMetrics(g_Doc, nodeIx);
+        if (abs is null || !abs.ok) {
+            lines.InsertLast("Absolute transform unavailable (missing typed props in ancestry).");
+        } else {
+            lines.InsertLast("Abs pos: " + _FmtVec2(abs.absPos));
+            lines.InsertLast("Abs scale: " + abs.absScale);
+            lines.InsertLast("Abs size: " + _FmtVec2(abs.absSize));
+            lines.InsertLast("Bounds min: " + _FmtVec2(abs.boundsMin));
+            lines.InsertLast("Bounds max: " + _FmtVec2(abs.boundsMax));
+            vec2 sz = abs.boundsMax - abs.boundsMin;
+            vec2 center = (abs.boundsMin + abs.boundsMax) * 0.5f;
+            lines.InsertLast("Bounds size: " + _FmtVec2(sz));
+            lines.InsertLast("Bounds center: " + _FmtVec2(center));
+            lines.InsertLast("Anchor: (" + abs.anchorX + ", " + abs.anchorY + ") from halign=" + n.typed.hAlign + " valign=" + n.typed.vAlign);
+            lines.InsertLast("Visibility: " + (abs.selfHidden ? "self hidden" : "self visible")
+                + " | " + (abs.hiddenByAncestor ? "ancestor hidden" : "ancestors visible"));
+            if (abs.underClipAncestor) lines.InsertLast("Under clip ancestors: " + abs.clipAncestorCount);
+        }
+
+        string outText = "";
+        for (uint i = 0; i < lines.Length; ++i) outText += (i == 0 ? "" : "\n") + lines[i];
+        return outText;
+    }
+
+    void _RenderBuilderSelectionSummaryContents(BuilderNode@ n, int nodeIx, const string &in idPrefix = "builder-summary") {
+        if (n is null) return;
+
+        string kind = n.kind.Length > 0 ? n.kind : n.tagName;
+        string summaryTitle = _BuilderNodeColorCode(kind) + kind + "\\$z";
+        if (n.controlId.Length > 0) summaryTitle += " \\$aaa#" + n.controlId + "\\$z";
+        UI::Text(summaryTitle);
+        UI::TextDisabled("[" + nodeIx + "] parent:" + (n.parentIx >= 0 ? tostring(n.parentIx) : "root")
+            + " children:" + n.childIx.Length + " fidelity:" + _FidelityLabel(n.fidelity.level));
+        UI::TextDisabled("Tag: " + n.tagName + " | Source: " + g_Doc.sourceKind
+            + (g_Doc.sourceLabel.Length > 0 ? (" (" + g_Doc.sourceLabel + ")") : ""));
+    }
+
     void _RenderInspectorPane() {
         _EnsureDoc();
 
         auto n = _GetSelectedNode();
         if (n is null) {
             UI::TextDisabled("No node selected.");
-            UI::TextDisabled("Select a node in the tree to view and edit its properties.");
-            UI::TextDisabled("Right-click a node for add/delete/move actions.");
+            UI::TextDisabled("Left-click container rows to open or close them.");
+            UI::TextDisabled("Right-click a node to select it for Properties and Actions.");
+            UI::TextDisabled("Middle-click opens the node context menu.");
             return;
         }
 
-        string kind = n.kind.Length > 0 ? n.kind : n.tagName;
-        string summaryTitle = _BuilderNodeColorCode(kind) + kind + "\\$z";
-        if (n.controlId.Length > 0) summaryTitle += " \\$aaa#" + n.controlId + "\\$z";
-        UI::Text(summaryTitle);
-        UI::TextDisabled("[" + g_SelectedNodeIx + "] parent:" + (n.parentIx >= 0 ? tostring(n.parentIx) : "root")
-            + " children:" + n.childIx.Length + " fidelity:" + _FidelityLabel(n.fidelity.level));
+        _RenderBuilderSelectionSummaryContents(n, g_SelectedNodeIx, "builder-header-summary");
         UI::Separator();
 
         UI::BeginTabBar("##builder-inspector-tabs");
 
         if (UI::BeginTabItem("Properties##builder-insp")) {
             if (UI::BeginChild("##builder-insp-props-scroll", vec2(0, 0), false)) {
+                UI::SetNextItemOpen(true, UI::Cond::Appearing);
+                if (UI::CollapsingHeader("Node Summary##builder-insp-summary")) {
+                    _RenderBuilderSelectionSummaryContents(n, g_SelectedNodeIx, "builder-tab-summary");
+                    UI::Separator();
+                }
                 _RenderInspectorPropertiesTab(n, g_SelectedNodeIx);
+            }
+            UI::EndChild();
+            UI::EndTabItem();
+        }
+
+        if (UI::BeginTabItem("Actions##builder-insp")) {
+            if (UI::BeginChild("##builder-insp-actions-scroll", vec2(0, 0), false)) {
+                _RenderInspectorActionsTab(n, g_SelectedNodeIx);
             }
             UI::EndChild();
             UI::EndTabItem();
@@ -910,6 +1142,34 @@ namespace Builder {
         }
         if (UI::IsItemHovered()) {
             _SetBuilderParentChainTooltip();
+        }
+        UI::SameLine();
+        bool stickySnap = S_BuilderStickySnapEnabled;
+        stickySnap = UI::Checkbox("Sticky snap##builder-edit-sticky-snap", stickySnap);
+        if (stickySnap != S_BuilderStickySnapEnabled) {
+            S_BuilderStickySnapEnabled = stickySnap;
+            if (!S_BuilderStickySnapEnabled && g_BuilderStickyGuides.active) {
+                _ClearBuilderStickyGuides();
+                _RefreshBuilderStickyGuidesPreview();
+            }
+        }
+        if (UI::IsItemHovered()) {
+            UI::SetTooltip("Snap position-slider moves to nearby screen and node guides.");
+        }
+        UI::SameLine();
+        bool stickyGuides = S_BuilderStickySnapGuidesEnabled;
+        stickyGuides = UI::Checkbox("Guides##builder-edit-sticky-guides", stickyGuides);
+        if (stickyGuides != S_BuilderStickySnapGuidesEnabled) {
+            S_BuilderStickySnapGuidesEnabled = stickyGuides;
+            if (!S_BuilderStickySnapGuidesEnabled && g_BuilderStickyGuides.active) {
+                _ClearBuilderStickyGuides();
+                _RefreshBuilderStickyGuidesPreview();
+            } else {
+                _RefreshBuilderStickyGuidesPreview();
+            }
+        }
+        if (UI::IsItemHovered()) {
+            UI::SetTooltip("Show full-screen guide lines when sticky snap locks to an axis.");
         }
     }
 
@@ -1458,6 +1718,29 @@ namespace Builder {
                 S_TreeWidth = UI::InputInt("Tree pane width##bv-set", S_TreeWidth);
                 if (S_TreeWidth < 220) S_TreeWidth = 220;
                 if (S_TreeWidth > 1100) S_TreeWidth = 1100;
+            }
+
+            UI::SetNextItemOpen(true, UI::Cond::Appearing);
+            if (UI::CollapsingHeader(Icons::Crosshairs + " Sticky Snap##bv-set-snap")) {
+                bool prevStickyEnabled = S_BuilderStickySnapEnabled;
+                bool prevGuidesEnabled = S_BuilderStickySnapGuidesEnabled;
+                S_BuilderStickySnapEnabled = UI::Checkbox("Enable sticky snap##bv-set-snap-enable", S_BuilderStickySnapEnabled);
+                S_BuilderStickySnapToScreen = UI::Checkbox("Snap to screen guides##bv-set-snap-screen", S_BuilderStickySnapToScreen);
+                S_BuilderStickySnapToNodes = UI::Checkbox("Snap to builder nodes##bv-set-snap-nodes", S_BuilderStickySnapToNodes);
+                S_BuilderStickySnapGuidesEnabled = UI::Checkbox("Show snap guide lines##bv-set-snap-guides", S_BuilderStickySnapGuidesEnabled);
+                S_BuilderStickySnapThreshold = UI::InputFloat("Snap threshold##bv-set-snap-thresh", S_BuilderStickySnapThreshold);
+                if (S_BuilderStickySnapThreshold < 0.0f) S_BuilderStickySnapThreshold = 0.0f;
+                if (S_BuilderStickySnapThreshold > 20.0f) S_BuilderStickySnapThreshold = 20.0f;
+                S_BuilderStickySnapOffscreenMargin = UI::InputFloat("Offscreen margin##bv-set-snap-margin", S_BuilderStickySnapOffscreenMargin);
+                if (S_BuilderStickySnapOffscreenMargin < 0.0f) S_BuilderStickySnapOffscreenMargin = 0.0f;
+                if (S_BuilderStickySnapOffscreenMargin > 40.0f) S_BuilderStickySnapOffscreenMargin = 40.0f;
+                if ((prevStickyEnabled != S_BuilderStickySnapEnabled || prevGuidesEnabled != S_BuilderStickySnapGuidesEnabled)
+                    && (!S_BuilderStickySnapEnabled || !S_BuilderStickySnapGuidesEnabled)
+                    && g_BuilderStickyGuides.active) {
+                    _ClearBuilderStickyGuides();
+                    _RefreshBuilderStickyGuidesPreview();
+                }
+                UI::TextDisabled("Applies to the position slider only. Manual text entry stays raw.");
             }
 
             int diagDocCount = int(g_Doc.diagnostics.Length);

@@ -819,9 +819,23 @@ namespace Layers {
         return _GetOwnedByComposite(compositeKey);
     }
 
+    bool _OwnedLayerHandleIsValid(OwnedLayer@ ol) {
+        if (ol is null || ol.layer is null) return false;
+
+        ManiaLinkSource resolved = ol.source;
+        CGameManiaApp@ app = null;
+        if (!_ResolveLayerSource(ol.source, resolved, app)) return false;
+        return _LayerBelongsToSource(resolved, app, ol.layer);
+    }
+
     CGameUILayer@ GetOwned(const string &in key) {
         auto ol = _GetOwned(_CurrentCallerScope(), key);
         if (ol is null) return null;
+        if (!_OwnedLayerHandleIsValid(ol)) {
+            @ol.layer = null;
+            if (ol.lastPage.Length > 0) ol.restorePending = true;
+            return null;
+        }
         return ol.layer;
     }
 

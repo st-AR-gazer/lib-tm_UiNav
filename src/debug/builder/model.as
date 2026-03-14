@@ -62,6 +62,24 @@ namespace Builder {
     [Setting hidden name="UiNav Builder v1.2 preview force-fit margin"]
     float S_PreviewForceFitMargin = 0.92f;
 
+    [Setting hidden name="UiNav Builder v1.2 sticky snap enabled"]
+    bool S_BuilderStickySnapEnabled = true;
+
+    [Setting hidden name="UiNav Builder v1.2 sticky snap to screen"]
+    bool S_BuilderStickySnapToScreen = true;
+
+    [Setting hidden name="UiNav Builder v1.2 sticky snap to builder nodes"]
+    bool S_BuilderStickySnapToNodes = true;
+
+    [Setting hidden name="UiNav Builder v1.2 sticky snap guides enabled"]
+    bool S_BuilderStickySnapGuidesEnabled = true;
+
+    [Setting hidden name="UiNav Builder v1.2 sticky snap threshold"]
+    float S_BuilderStickySnapThreshold = 2.0f;
+
+    [Setting hidden name="UiNav Builder v1.2 sticky snap offscreen margin"]
+    float S_BuilderStickySnapOffscreenMargin = 6.0f;
+
     [Setting hidden name="UiNav Builder v1.2 selector source app kind"]
     int S_SelectorSourceAppKind = -1; // -1 = all, 0 = playground, 1 = menu, 2 = current
 
@@ -110,6 +128,15 @@ namespace Builder {
     vec2 g_LastPreviewBoundsMin = vec2();
     vec2 g_LastPreviewBoundsMax = vec2();
     string g_LastPreviewDiagText = "";
+
+    class BuilderStickyGuideState {
+        bool active = false;
+        vec2 screenHalfExtents = vec2(160.0f, 90.0f);
+        float offscreenMargin = 0.0f;
+        array<float> verticals;
+        array<float> horizontals;
+    }
+    BuilderStickyGuideState g_BuilderStickyGuides;
 
     class LiveLayerBoundsRow {
         int appKind = -1;
@@ -221,6 +248,8 @@ namespace Builder {
         outV.clipActive = src.clipActive;
         outV.clipPos = src.clipPos;
         outV.clipSize = src.clipSize;
+        outV.clipPosExplicit = src.clipPosExplicit;
+        outV.clipSizeExplicit = src.clipSizeExplicit;
 
         outV.image = src.image;
         outV.imageFocus = src.imageFocus;
@@ -330,6 +359,9 @@ namespace Builder {
         g_RedoSnapshots.Resize(0);
         g_LastDiff = "";
         g_LastExportXml = "";
+        g_BuilderStickyGuides.active = false;
+        g_BuilderStickyGuides.verticals.Resize(0);
+        g_BuilderStickyGuides.horizontals.Resize(0);
         _RebuildNodeIndex(g_Doc);
     }
 

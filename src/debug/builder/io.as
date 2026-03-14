@@ -213,9 +213,11 @@ namespace Builder {
                     consumed = true;
                 } else if (lk == "clippos" || lk == "clipposn") {
                     node.typed.clipPos = _ParseVec2(v, node.typed.clipPos);
+                    node.typed.clipPosExplicit = true;
                     consumed = true;
                 } else if (lk == "clipsize" || lk == "clipsizen") {
                     node.typed.clipSize = _ParseVec2(v, node.typed.clipSize);
+                    node.typed.clipSizeExplicit = true;
                     consumed = true;
                 }
             }
@@ -496,8 +498,12 @@ namespace Builder {
             if (node.kind == "frame") {
                 if (node.typed.clipActive) {
                     _EmitAttr(attrs, "clip", "1", false);
-                    _EmitAttr(attrs, "clippos", _Vec2ToAttr(node.typed.clipPos), false);
-                    _EmitAttr(attrs, "clipsize", _Vec2ToAttr(node.typed.clipSize), false);
+                    if (node.typed.clipPosExplicit) {
+                        _EmitAttr(attrs, "clippos", _Vec2ToAttr(node.typed.clipPos), false);
+                    }
+                    if (node.typed.clipSizeExplicit) {
+                        _EmitAttr(attrs, "clipsize", _Vec2ToAttr(node.typed.clipSize), false);
+                    }
                 }
             } else if (node.kind == "quad") {
                 _EmitAttr(attrs, "image", node.typed.image, true);

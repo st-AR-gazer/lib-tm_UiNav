@@ -30,6 +30,18 @@ UiNav intentionally keeps a strict public surface:
 
 Everything else under `src/core/*` (other than those shared type files) and all debug tooling under `src/debug/*` is internal and may change.
 
+Recommended stable surface:
+
+- Target-based resolution/action APIs (`Resolve`, `IsReadyEx`, `WaitForTargetEx`, `ClickEx`, `SetTextEx`, `ReadTextEx`)
+- Declarative request/spec types (`Target`, `ManiaLinkReq`, `ManiaLinkSpec`, `ControlTreeReq`, `ControlTreeSpec`, `Requires`)
+- Owned-layer lifecycle helpers (`EnsureOwned`, `DestroyOwned`, `DestroyAllOwned`)
+
+Advanced surface:
+
+- Raw-handle ML/ControlTree helpers (`UiNav::ML::*`, `UiNav::CT::*`, and root `CControlBase@` helpers like `CanClick`)
+- `UiNav::Builder` authoring/document APIs
+- Style packs and observability/metrics exports
+
 Note: `src/Exports/types.as` currently exists but is empty; shared types are provided via `shared_exports` in `info.toml`.
 
 ### Version gating
@@ -50,7 +62,7 @@ if (!UiNav::ApiVersionAtLeast(0, 1, 0)) {
 
 - `BackendKind`: `None`, `ControlTree`, `ML`
 - `BackendPref`: `Unspecified`, `PreferControlTree`, `PreferML`
-- `OpStatus`: `Ok`, `InvalidTarget`, `RequirementsFailed`, `ResolveFailed`, `InvalidBackendRef`, `NotVisible`, `ActionFailed`, `TimedOut`
+- `OpStatus`: `Ok`, `InvalidTarget`, `RequirementsFailed`, `ResolveFailed`, `InvalidBackendRef`, `NotVisible`, `ActionFailed`, `TimedOut`, `UnsupportedOperation`
 
 ### `Target`
 
@@ -78,12 +90,18 @@ UiNav::InvalidateTargetPlan(t); // flush resolved refs and rebuild prepared targ
 - Most convenience APIs return a simple `bool`/`string`.
 - The `*Ex` variants return `UiNav::OpResult@` with structured failure info:
   - `status` (`OpStatus`)
+  - `code` (machine-friendly failure code)
   - `reason` (human-readable)
+  - `detail` (additional failure detail when available)
   - `kind` (backend used)
   - `ref` (`NodeRef@`) when available
   - `text` for `ReadTextEx`
+  - `waitedMs`, `attempts`, and `lastStatus` for `WaitForTargetEx`
 
 In practice: use `*Ex` while developing/debugging and switch to the simple variants once stable.
+
+`WaitForTargetEx(..., 0, ...)` now returns the immediate readiness probe result unchanged.
+On a real timeout, `status == TimedOut` and `lastStatus` preserves the last readiness status observed before the timeout.
 
 `NodeRef` also exposes small convenience helpers so callers do not need to pattern-match the backend by hand for simple cases:
 
@@ -156,7 +174,7 @@ Root and search behavior live in `ControlTreeReq`; `ControlTreeSpec` is only `re
 
 ## Authoring And Owned Layers
 
-UiNav now exposes a public authoring surface for clone/edit/remount workflows:
+UiNav exposes an advanced authoring surface for clone/edit/remount workflows:
 
 - `UiNav::Builder::ImportXml(...)`
 - `UiNav::Builder::ImportJson(...)`
@@ -168,6 +186,8 @@ UiNav now exposes a public authoring surface for clone/edit/remount workflows:
 - `UiNav::Builder::ExportJson(doc)`, `SaveJsonToFile(doc, path)`, `LoadJsonFromFile(path)`
 - `UiNav::Builder::MountOwned(key, doc, source, visible)`
 - `UiNav::Layers::EnsureOwned(...)`, `GetOwned(...)`, `DestroyOwned(...)`, `DestroyAllOwned()`
+
+Builder is usable today, but it should still be treated as an advanced API rather than a minimal frozen core contract.
 
 Owned-layer keys are scoped internally to the calling plugin ID.
 That means different plugins can reuse the same public key without colliding, and `DestroyAllOwned()` only destroys layers owned by the calling plugin.
@@ -192,6 +212,13 @@ UiNav::Builder::MountOwned("MyPreview", doc, UiNav::ManiaLinkSource::Menu, true)
 
 `UiNav::Builder::ResolveSelector(...)` reuses ML selector syntax and now matches the start/root node on the first non-index token, just like `UiNav::ML::ResolveSelector(...)`.
 
+Builder type helpers:
+
+- `BuilderNode.KindEnum()` / `BuilderNode.SetKind(...)` provide enum-backed node-kind access without relying on raw strings.
+- `BuilderDiagnostic.SeverityEnum()` provides enum-backed severity access.
+- `BuilderDocument.SourceKindEnum()` exposes the import/source kind as an enum helper.
+- `BuilderDocument.RootCount()`, `RootNodeIx(...)`, `HasMultipleRoots()`, and `SetPrimaryRoot(...)` make multi-root documents explicit.
+
 ## Typical Usage Pattern (Public API)
 
 Workflow:
@@ -203,6 +230,7 @@ Workflow:
 5. If both `ml` and `controlTree` are configured, set `Target.pref` explicitly.
 
 `WaitForTarget(..., 0, ...)` performs a single immediate readiness probe and returns without polling.
+`WaitForTargetEx(..., 0, ...)` returns that direct probe result rather than synthesizing a timeout.
 
 Example: read text from a label in a specific ML layer:
 
@@ -270,6 +298,15 @@ UiNav::ManiaLinkSpec@ alt = UiNav::ManiaLinkSpec();
 alt.selector = "#AltLayout/#ButtonOk";
 ml.AddAlt(alt);
 ```
+
+## Raw Handle Capability Helpers
+
+If you are using the advanced raw-handle APIs directly, prefer checking capabilities before acting:
+
+- Root `CControlBase@` helpers: `HasReadableText`, `CanClick`, `CanSetText`
+- ML helpers: `UiNav::ML::HasReadableText`, `UiNav::ML::CanClick`, `UiNav::ML::CanSetText`
+
+These helpers exist to make raw-handle code less guessy; the target-based APIs already apply the same capability checks internally for `ClickEx`, `SetTextEx`, and `ReadTextEx`.
 
 ## Selector Syntax (ML)
 
@@ -469,6 +506,8 @@ Features:
 Live bounds overlay integration:
 
 - `Live layer box`: draws bounds for the currently selected ML layer or selected subtree path in live UI.
+- `Parent chain`: optionally draws bounds for each direct parent path of the selected node.
+- The main `ManiaLink UI` pane also exposes `Selection box` and `Parent chain` toggles for these overlays.
 
 ### ControlTree UI (ControlTree inspector)
 
@@ -496,19 +535,26 @@ Common workflows:
   - use `Preview` to apply to a UiNav-owned layer for iteration
 - Import a live layer:
   - In `ManiaLink UI`, middle-click a layer row -> `Copy layer to Builder`
+  - this now prefers runtime hierarchy cloning from the layer's `MainFrame` contents, with raw layer XML as fallback if live-tree cloning fails
   - Edit in Builder (`Edit` tab), then preview/export
 - Import from XML:
   - `I/O` tab -> paste XML -> import
 
 Builder tabs:
 
-- `Edit`: tree + properties editor (right click selects; middle click opens node menu)
+- `Edit`: tree + properties editor
+  - left-click container rows toggles open/closed
+  - right click selects a node for the inspector
+  - middle click opens the node context menu
+  - inspector tabs include `Properties`, `Actions`, `Raw Attrs`, and `Computed`
+  - the position slider supports optional sticky snapping to screen guides and other builder nodes, with preview guide lines
 - `Preview`: apply live preview + debug overlays (bounds/origin/selected bounds)
 - `I/O`: import/export XML, diff against baseline, write to file
 - `Code`: helper exports (builder-specific)
 - `Settings`: behavior toggles (auto-preview, strip clipping on import, diagnostics, self-tests)
 
 If a frame's clipping hides children that overflow their parent, enable `Strip frame clipping on import` in Builder settings and re-import the live layer.
+Builder now preserves implicit frame clipping from imported XML without synthesizing `clippos`/`clipsize="0 0"` on export, which previously could over-clip copied live UI compared to the original Nadeo layer.
 
 ### ManiaLink Browser
 
@@ -570,7 +616,8 @@ Request shape (fields can be top-level or inside `data`):
 ### Target never resolves
 
 - Make your `ManiaLinkReq` specific: use `pageNeedle` and/or `rootControlId`.
-- Use `IsReadyEx` / `WaitForTargetEx` and inspect `OpResult.status` + `OpResult.reason`.
+- Use `IsReadyEx` / `WaitForTargetEx` and inspect `OpResult.status`, `OpResult.reason`, and `OpResult.detail`.
+- If `WaitForTargetEx` times out, inspect `OpResult.lastStatus` to see what the last readiness probe was returning.
 - Use the in-game inspectors to generate selectors and code snippets.
 
 ### It works sometimes then stops

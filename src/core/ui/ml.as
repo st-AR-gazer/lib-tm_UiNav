@@ -108,11 +108,23 @@ namespace ML {
         return path;
     }
 
-    string ReadText(CGameManialinkControl@ n) {
-        if (n is null) return "";
+    bool TryReadText(CGameManialinkControl@ n, string &out text) {
+        text = "";
+        if (n is null) return false;
         auto c = _TryGetControl(n);
-        if (c is null) return "";
-        return UiNav::ReadText(c);
+        if (c is null) return false;
+        return UiNav::TryReadText(c, text);
+    }
+
+    bool HasReadableText(CGameManialinkControl@ n) {
+        string text;
+        return TryReadText(n, text);
+    }
+
+    string ReadText(CGameManialinkControl@ n) {
+        string text;
+        if (!TryReadText(n, text)) return "";
+        return text;
     }
 
     bool IsVisibleSelf(CGameManialinkControl@ n) {
@@ -485,6 +497,12 @@ namespace ML {
         return false;
     }
 
+    bool CanClick(CGameManialinkControl@ n, bool childFallback = true) {
+        if (n is null) return false;
+        auto c = _TryGetControl(n);
+        return c !is null && UiNav::CanClick(c, childFallback);
+    }
+
     bool SetText(CGameManialinkControl@ n, const string &in text) {
         if (n is null) return false;
 
@@ -497,6 +515,13 @@ namespace ML {
         auto c = _TryGetControl(n);
         if (c is null) return false;
         return UiNav::SetTextControlNode(c, text);
+    }
+
+    bool CanSetText(CGameManialinkControl@ n) {
+        if (n is null) return false;
+        if (cast<CGameManialinkEntry>(n) !is null) return true;
+        auto c = _TryGetControl(n);
+        return c !is null && UiNav::CanSetText(c);
     }
 
     string g_SnapshotClipboardJson = "";

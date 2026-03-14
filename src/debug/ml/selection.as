@@ -4,6 +4,25 @@ namespace Debug {
     string g_MlControlTreePathLookupKey = "";
     string g_MlControlTreePathCached = "";
     string g_MlControlTreePathStatus = "";
+    int g_MlSelectionTabSelectPending = -1;
+    string g_MlSelectionTabContextKey = "";
+
+    class MlLiveMetrics {
+        bool ok = false;
+        vec2 absPos = vec2();
+        float absScale = 1.0f;
+        vec2 absSize = vec2();
+        vec2 boundsMin = vec2();
+        vec2 boundsMax = vec2();
+        float anchorX = 0.5f;
+        float anchorY = 0.5f;
+        string hAlign = "";
+        string vAlign = "";
+        bool selfHidden = false;
+        bool hiddenByAncestor = false;
+        bool underClipAncestor = false;
+        int clipAncestorCount = 0;
+    }
 
     class MlSelectionContext {
         CGameManialinkControl@ sel = null;
@@ -267,8 +286,133 @@ namespace Debug {
         return true;
     }
 
-    void _RenderMlSelectionHeader(MlSelectionContext@ ctx) {
-        UI::BeginChild("##ml-selection-summary", vec2(0, 118), true);
+    float _MlAnchorXFromLiveAlign(CGameManialinkControl::EAlignHorizontal a) {
+        int v = int(a);
+        if (v == 0) return 0.0f;
+        if (v == 2) return 1.0f;
+        return 0.5f;
+    }
+
+    float _MlAnchorYFromLiveAlign(CGameManialinkControl::EAlignVertical a) {
+        int v = int(a);
+        if (v == 0) return 0.0f;
+        if (v == 2) return 1.0f;
+        return 0.5f;
+    }
+
+    string _MlAlignHName(CGameManialinkControl::EAlignHorizontal a) {
+        int v = int(a);
+        if (v == 0) return "left";
+        if (v == 1) return "center";
+        if (v == 2) return "right";
+        return "" + v;
+    }
+
+    string _MlAlignVName(CGameManialinkControl::EAlignVertical a) {
+        int v = int(a);
+        if (v == 0) return "top";
+        if (v == 1) return "center";
+        if (v == 2) return "bottom";
+        if (v == 4) return "center2";
+        return "" + v;
+    }
+
+    string _MlFmtVec2(const vec2 &in v) {
+        return "(" + v.x + ", " + v.y + ")";
+    }
+
+    MlLiveMetrics@ _ComputeMlLiveMetrics(CGameManialinkControl@ sel) {
+        auto m = MlLiveMetrics();
+        if (sel is null) return m;
+
+        vec2 absPos = vec2();
+        vec2 size = vec2();
+        float absScale = 1.0f;
+        CGameManialinkControl::EAlignHorizontal ha = CGameManialinkControl::EAlignHorizontal(1);
+        CGameManialinkControl::EAlignVertical va = CGameManialinkControl::EAlignVertical(1);
+
+        bool ok = true;
+        try { absPos = sel.AbsolutePosition_V3; } catch { ok = false; }
+        try { size = sel.Size; } catch { ok = false; }
+        try { absScale = sel.AbsoluteScale; } catch { absScale = 1.0f; }
+        try { ha = sel.HorizontalAlign; } catch { ha = CGameManialinkControl::EAlignHorizontal(1); }
+        try { va = sel.VerticalAlign; } catch { va = CGameManialinkControl::EAlignVertical(1); }
+
+        bool selfVisible = true;
+        try { selfVisible = sel.Visible; } catch { selfVisible = true; }
+
+        bool hiddenByAncestor = false;
+        int clipAnc = 0;
+        CGameManialinkFrame@ parent = null;
+        try { @parent = sel.Parent; } catch { @parent = null; }
+        int guard = 0;
+        while (parent !is null && guard < 256) {
+            guard++;
+            bool parentVisible = true;
+            try { parentVisible = parent.Visible; } catch { parentVisible = true; }
+            if (!parentVisible) hiddenByAncestor = true;
+
+            bool clipActive = false;
+            try { clipActive = parent.ClipWindowActive; } catch { clipActive = false; }
+            if (clipActive) clipAnc++;
+
+            try { @parent = parent.Parent; } catch { @parent = null; }
+        }
+
+        if (!ok) return m;
+
+        m.ok = true;
+        m.absPos = absPos;
+        m.absScale = absScale;
+        m.absSize = size * absScale;
+        m.anchorX = _MlAnchorXFromLiveAlign(ha);
+        m.anchorY = _MlAnchorYFromLiveAlign(va);
+        m.hAlign = _MlAlignHName(ha);
+        m.vAlign = _MlAlignVName(va);
+        m.boundsMin = vec2(absPos.x - m.anchorX * m.absSize.x, absPos.y - (1.0f - m.anchorY) * m.absSize.y);
+        m.boundsMax = vec2(absPos.x + (1.0f - m.anchorX) * m.absSize.x, absPos.y + m.anchorY * m.absSize.y);
+        m.selfHidden = !selfVisible;
+        m.hiddenByAncestor = hiddenByAncestor;
+        m.clipAncestorCount = clipAnc;
+        m.underClipAncestor = clipAnc > 0;
+        return m;
+    }
+
+    string _BuildMlSelectionBoundsDataText(MlSelectionContext@ ctx) {
+        if (ctx is null || ctx.sel is null) return "";
+
+        auto m = _ComputeMlLiveMetrics(ctx.sel);
+        array<string> lines;
+        string title = UiNav::ML::TypeName(ctx.sel);
+        if (ctx.id.Length > 0) title += " #" + ctx.id;
+        lines.InsertLast(title);
+
+        if (m is null || !m.ok) {
+            lines.InsertLast("Live geometry unavailable.");
+        } else {
+            lines.InsertLast("Abs pos: " + _MlFmtVec2(m.absPos));
+            lines.InsertLast("Abs scale: " + m.absScale);
+            lines.InsertLast("Abs size: " + _MlFmtVec2(m.absSize));
+            lines.InsertLast("Bounds min: " + _MlFmtVec2(m.boundsMin));
+            lines.InsertLast("Bounds max: " + _MlFmtVec2(m.boundsMax));
+            vec2 sz = m.boundsMax - m.boundsMin;
+            vec2 center = (m.boundsMin + m.boundsMax) * 0.5f;
+            lines.InsertLast("Bounds size: " + _MlFmtVec2(sz));
+            lines.InsertLast("Bounds center: " + _MlFmtVec2(center));
+            lines.InsertLast("Anchor: (" + m.anchorX + ", " + m.anchorY + ") from halign=" + m.hAlign + " valign=" + m.vAlign);
+            lines.InsertLast("Visibility: " + (m.selfHidden ? "self hidden" : "self visible")
+                + " | " + (m.hiddenByAncestor ? "ancestor hidden" : "ancestors visible"));
+            if (m.underClipAncestor) lines.InsertLast("Under clip ancestors: " + m.clipAncestorCount);
+        }
+
+        string outText = "";
+        for (uint i = 0; i < lines.Length; ++i) outText += (i == 0 ? "" : "\n") + lines[i];
+        return outText;
+    }
+
+    void _RenderMlSelectionSummaryContents(MlSelectionContext@ ctx, const string &in idPrefix = "ml-summary") {
+        if (ctx is null || ctx.sel is null) return;
+
         string title = UiNav::ML::TypeName(ctx.sel);
         if (ctx.id.Length > 0) title += " #" + ctx.id;
         _MlSelectionCopyValueText(title, title, "ml-summary-title");
@@ -299,7 +443,19 @@ namespace Debug {
         UI::SameLine();
         bool ctAccent = ctx.controlTreeDisplay.Length > 0;
         _MlSelectionCopyValueText(ctPath, ctPath, "ml-summary-controltree", ctAccent);
+    }
+
+    void _RenderMlSelectionHeader(MlSelectionContext@ ctx) {
+        UI::BeginChild("##ml-selection-summary", vec2(0, 142), true);
+        _RenderMlSelectionSummaryContents(ctx, "ml-header-summary");
         UI::EndChild();
+    }
+
+    void _EnsureMlSelectionTabPending() {
+        string key = g_SelectedMlUiPath + "|" + g_SelectedMlPath + "|" + g_SelectedMlLayerIx + "|" + g_SelectedMlAppKind;
+        if (g_MlSelectionTabContextKey == key) return;
+        g_MlSelectionTabContextKey = key;
+        g_MlSelectionTabSelectPending = 0;
     }
 
     void _RenderMlSelection() {
@@ -323,28 +479,41 @@ namespace Debug {
         UI::TextDisabled("Core: Overview | Selectors | Code");
         UI::TextDisabled("Advanced: Actions | Export | Notes");
 
+        _EnsureMlSelectionTabPending();
         UI::BeginTabBar("##ml-selection-tabs");
-        if (UI::BeginTabItem("Overview")) {
+        int flags = g_MlSelectionTabSelectPending == 0 ? UI::TabItemFlags::SetSelected : UI::TabItemFlags::None;
+        if (UI::BeginTabItem("Overview", flags)) {
+            if (g_MlSelectionTabSelectPending == 0) g_MlSelectionTabSelectPending = -1;
             _RenderMlSelectionOverview(ctx);
             UI::EndTabItem();
         }
-        if (UI::BeginTabItem("Selectors")) {
+        flags = g_MlSelectionTabSelectPending == 1 ? UI::TabItemFlags::SetSelected : UI::TabItemFlags::None;
+        if (UI::BeginTabItem("Selectors", flags)) {
+            if (g_MlSelectionTabSelectPending == 1) g_MlSelectionTabSelectPending = -1;
             _RenderMlSelectionSelectors(ctx);
             UI::EndTabItem();
         }
-        if (UI::BeginTabItem("Code")) {
+        flags = g_MlSelectionTabSelectPending == 2 ? UI::TabItemFlags::SetSelected : UI::TabItemFlags::None;
+        if (UI::BeginTabItem("Code", flags)) {
+            if (g_MlSelectionTabSelectPending == 2) g_MlSelectionTabSelectPending = -1;
             _RenderMlSelectionCode(ctx);
             UI::EndTabItem();
         }
-        if (UI::BeginTabItem("Actions")) {
+        flags = g_MlSelectionTabSelectPending == 3 ? UI::TabItemFlags::SetSelected : UI::TabItemFlags::None;
+        if (UI::BeginTabItem("Actions", flags)) {
+            if (g_MlSelectionTabSelectPending == 3) g_MlSelectionTabSelectPending = -1;
             _RenderMlSelectionActions(ctx);
             UI::EndTabItem();
         }
-        if (UI::BeginTabItem("Export")) {
+        flags = g_MlSelectionTabSelectPending == 4 ? UI::TabItemFlags::SetSelected : UI::TabItemFlags::None;
+        if (UI::BeginTabItem("Export", flags)) {
+            if (g_MlSelectionTabSelectPending == 4) g_MlSelectionTabSelectPending = -1;
             _RenderMlSelectionExport(ctx);
             UI::EndTabItem();
         }
-        if (UI::BeginTabItem("Notes")) {
+        flags = g_MlSelectionTabSelectPending == 5 ? UI::TabItemFlags::SetSelected : UI::TabItemFlags::None;
+        if (UI::BeginTabItem("Notes", flags)) {
+            if (g_MlSelectionTabSelectPending == 5) g_MlSelectionTabSelectPending = -1;
             _RenderMlSelectionNotes(ctx);
             UI::EndTabItem();
         }

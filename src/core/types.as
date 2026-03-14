@@ -33,7 +33,8 @@ namespace UiNav {
         InvalidBackendRef  = 4,
         NotVisible         = 5,
         ActionFailed       = 6,
-        TimedOut           = 7
+        TimedOut           = 7,
+        UnsupportedOperation = 8
     }
 
     shared class ManiaLinkReq {
@@ -124,11 +125,15 @@ namespace UiNav {
         ManiaLinkSpec@  ml;
         Requires@ req;
 
-        uint cacheInvalidationSerial = 1;
+        private uint _cacheInvalidationSerial = 1;
+
+        uint CacheInvalidationSerial() const {
+            return _cacheInvalidationSerial == 0 ? 1 : _cacheInvalidationSerial;
+        }
 
         void InvalidateCache() {
-            cacheInvalidationSerial++;
-            if (cacheInvalidationSerial == 0) cacheInvalidationSerial = 1;
+            _cacheInvalidationSerial++;
+            if (_cacheInvalidationSerial == 0) _cacheInvalidationSerial = 1;
         }
     }
 
@@ -175,13 +180,26 @@ namespace UiNav {
 
     shared class OpResult {
         OpStatus status = OpStatus::ResolveFailed;
+        OpStatus lastStatus = OpStatus::ResolveFailed;
         BackendKind kind = BackendKind::None;
+        string code;
         string reason;
+        string detail;
         string text;
         NodeRef@ ref = null;
+        uint waitedMs = 0;
+        uint attempts = 0;
 
         bool Ok() const {
             return status == OpStatus::Ok;
+        }
+
+        bool TimedOut() const {
+            return status == OpStatus::TimedOut;
+        }
+
+        bool HasDetail() const {
+            return detail.Length > 0;
         }
     }
 

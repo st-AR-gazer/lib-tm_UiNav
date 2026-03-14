@@ -15,7 +15,16 @@ Dependent plugins should only rely on:
 
 Everything else in `src/` is considered internal implementation detail.
 
-Public authoring support is available through `UiNav::Builder` plus owned-layer lifecycle helpers in `UiNav::Layers` (`EnsureOwned`, `GetOwned`, `DestroyOwned`, `DestroyAllOwned`).
+Recommended stable surface:
+- Target-based APIs like `Resolve`, `IsReadyEx`, `WaitForTargetEx`, `ClickEx`, `SetTextEx`, `ReadTextEx`
+- Owned-layer lifecycle helpers like `EnsureOwned`, `DestroyOwned`, `DestroyAllOwned`
+
+Advanced surface:
+- Raw ML/ControlTree handle helpers and selector helpers
+- `UiNav::Builder` authoring/document APIs
+- Style-pack and observability/metrics exports
+
+Public authoring support is available through `UiNav::Builder` plus owned-layer lifecycle helpers in `UiNav::Layers` (`EnsureOwned`, `GetOwned`, `DestroyOwned`, `DestroyAllOwned`), but Builder should still be treated as an advanced API.
 
 `UiNav::ML` exports include both single-node snapshot helpers and multi-element **style pack** helpers
 for capturing/reusing styling across menus/layers (`NewStylePack`, `StylePackAddEntry*`, `StylePackApply`, save/load JSON).

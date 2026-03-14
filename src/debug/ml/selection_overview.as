@@ -4,6 +4,41 @@ namespace Debug {
     void _RenderMlSelectionOverview(MlSelectionContext@ ctx) {
         if (ctx is null || ctx.sel is null) return;
 
+        UI::SetNextItemOpen(true, UI::Cond::Appearing);
+        if (UI::CollapsingHeader("Selection Summary##ml-overview-summary")) {
+            _RenderMlSelectionSummaryContents(ctx, "ml-overview-summary");
+            UI::Separator();
+        }
+
+        UI::SetNextItemOpen(true, UI::Cond::Appearing);
+        if (UI::CollapsingHeader("Live Geometry##ml-overview-geometry")) {
+            auto m = _ComputeMlLiveMetrics(ctx.sel);
+            if (m is null || !m.ok) {
+                UI::TextDisabled("Absolute geometry unavailable.");
+            } else {
+                UI::TextDisabled("Abs pos: " + _MlFmtVec2(m.absPos));
+                UI::TextDisabled("Abs scale: " + tostring(m.absScale));
+                UI::TextDisabled("Abs size: " + _MlFmtVec2(m.absSize));
+                UI::Separator();
+                UI::TextDisabled("Bounds min: " + _MlFmtVec2(m.boundsMin));
+                UI::TextDisabled("Bounds max: " + _MlFmtVec2(m.boundsMax));
+                vec2 sz = m.boundsMax - m.boundsMin;
+                vec2 center = (m.boundsMin + m.boundsMax) * 0.5f;
+                UI::TextDisabled("Bounds size: " + _MlFmtVec2(sz));
+                UI::TextDisabled("Bounds center: " + _MlFmtVec2(center));
+                UI::Separator();
+                UI::TextDisabled("Anchor: (" + m.anchorX + ", " + m.anchorY + ") from halign=" + m.hAlign + " valign=" + m.vAlign);
+                if (m.selfHidden || m.hiddenByAncestor) {
+                    UI::TextDisabled("Visibility: " + (m.selfHidden ? "self hidden" : "self visible")
+                        + " | " + (m.hiddenByAncestor ? "ancestor hidden" : "ancestors visible"));
+                }
+                if (m.underClipAncestor) {
+                    UI::TextDisabled("Under clip ancestors: " + m.clipAncestorCount);
+                }
+            }
+            UI::Separator();
+        }
+
         UI::TextDisabled("Identity, current value preview, and quick metadata.");
         _MlSelectionInfoLine("Layer", "" + g_SelectedMlLayerIx, false, "overview-layer");
         _MlSelectionInfoLine("App", _MlAppNameByKind(g_SelectedMlAppKind), false, "overview-app");
